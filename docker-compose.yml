@@ -24,7 +24,7 @@ services:
     volumes:
       - ./backend:/app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8888:8000"
     restart: unless-stopped
 
   frontend:
@@ -36,7 +36,7 @@ services:
       - ./frontend:/app
       - /app/node_modules
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3333:3000"
     restart: unless-stopped
 
 volumes:
