@@ -26,6 +26,8 @@ services:
     ports:
       - "127.0.0.1:8888:8000"
     restart: unless-stopped
+    security_opt:
+      - "apparmor:unconfined"
 
   frontend:
     build: ./frontend
@@ -38,6 +40,8 @@ services:
     ports:
       - "127.0.0.1:3333:3000"
     restart: unless-stopped
+    security_opt:
+      - "apparmor:unconfined"
 
 volumes:
   postgres_data:
