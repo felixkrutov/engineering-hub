@@ -26,8 +26,6 @@ services:
     ports:
       - "127.0.0.1:8888:8000"
     restart: unless-stopped
-    security_opt:
-      - "apparmor:unconfined"
 
   frontend:
     build: ./frontend
@@ -37,11 +35,15 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-    ports:
-      - "127.0.0.1:3333:3000"
     restart: unless-stopped
-    security_opt:
-      - "apparmor:unconfined"
+
+  nginx:
+    build: ./nginx
+    container_name: engineering-hub-nginx
+    depends_on:
+      - frontend
+    ports:
+      - "8080:8080"
 
 volumes:
   postgres_data:
