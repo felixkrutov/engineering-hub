@@ -1,0 +1,23 @@
+# Environments
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*venv/
+
+# Node.js
+node_modules/
+build/
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# General
+.DS_Store
+*.tmp
+*.swp
