@@ -13,6 +13,8 @@ services:
     ports:
       - "5432:5432"
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   backend:
     build: ./backend
@@ -23,9 +25,9 @@ services:
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
     volumes:
       - ./backend:/app
-    ports:
-      - "127.0.0.1:8888:8000"
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   frontend:
     build: ./frontend
@@ -36,6 +38,8 @@ services:
       - ./frontend:/app
       - /app/node_modules
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   nginx:
     build: ./nginx
@@ -43,7 +47,10 @@ services:
     depends_on:
       - frontend
     ports:
-      - "8080:8080"
+      - "80:80"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   postgres_data:
