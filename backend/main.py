@@ -150,7 +150,7 @@ async def chat(request: ChatRequest):
 
         if len(history) == 2:
             try:
-                title_prompt = f"Summarize the following conversation in 5 words or less. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {response.text}\n\nTitle:"
+                title_prompt = f"Summarize the following conversation in 5 words or less. Crucially, you must respond in the same language as the conversation. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {response.text}\n\nTitle:"
                 title_response = model.generate_content(title_prompt)
                 chat_title = title_response.text.strip().replace('"', '')
                 title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
