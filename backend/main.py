@@ -45,7 +45,7 @@ class RenameRequest(BaseModel):
 async def list_chats():
     chats = []
     os.makedirs(HISTORY_DIR, exist_ok=True)
-    for filename in sorted(os.listdir(HISTORY_DIR)):
+    for filename in os.listdir(HISTORY_DIR):
         if filename.endswith(".json"):
             conversation_id = filename[:-5]
             title_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
@@ -147,6 +147,17 @@ async def chat(request: ChatRequest):
 
         with open(history_file_path, 'w') as f:
             json.dump(history, f, indent=2)
+
+        if len(history) == 2:
+            try:
+                title_prompt = f"Summarize the following conversation in 5 words or less. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {response.text}\n\nTitle:"
+                title_response = model.generate_content(title_prompt)
+                chat_title = title_response.text.strip().replace('"', '')
+                title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
+                with open(title_file_path, 'w') as f:
+                    f.write(chat_title)
+            except Exception as e:
+                print(f"An error occurred during title generation: {e}")
         
         return ChatResponse(reply=response.text)
 
