@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
-import { FaPaperPlane } from 'react-icons/fa';
+import { FaPaperPlane, FaBars, FaTimes } from 'react-icons/fa';
 import { v4 as uuidv4 } from 'uuid';
 import './App.css';
 
@@ -14,6 +14,7 @@ function App() {
   const [userInput, setUserInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string>('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -62,8 +63,18 @@ function App() {
   };
 
   return (
-    <div className="app-wrapper" data-theme="dark">
+    <div className={`app-wrapper ${!isSidebarOpen ? 'sidebar-closed' : ''}`}>
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <button className="new-chat-button">Новый чат</button>
+        </div>
+      </aside>
+
       <main className="main-content">
+        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="sidebar-toggle">
+          {isSidebarOpen ? <FaTimes /> : <FaBars />}
+        </button>
+
         <div className="chat-area">
           <div className="chat-container" ref={chatContainerRef}>
             {messages.length === 0 ? (
