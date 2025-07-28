@@ -371,19 +371,25 @@ body[data-theme="light"] .app-wrapper,
 }
 
 .modal-btn-confirm {
-  background-color: #4A4A58;
-  color: #EAEAEA;
-  border: 1px solid #636370;
-  padding: 8px 16px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+    background-color: #8A2BE2;
+    color: white;
+    border: 1px solid #9932CC;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
-.modal-btn-confirm:hover {
-  background-color: #5A5A68;
-  border-color: #7D7D8A;
+.modal-btn-confirm:hover:not(.disabled) {
+  background-color: #9932CC;
+}
+
+.modal-btn-confirm.disabled {
+  background-color: #3a3a44;
+  color: #7d7d8a;
+  cursor: not-allowed;
+  border-color: #4a4a58;
 }
 
 .modal-btn-cancel {
