@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
-import { FaPaperPlane, FaBars, FaTimes } from 'react-icons/fa';
+import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrash } from 'react-icons/fa';
 import { v4 as uuidv4 } from 'uuid';
 import './App.css';
 
@@ -80,6 +80,50 @@ function App() {
     setCurrentChatId(null);
     setMessages([]);
   };
+  
+  const handleRenameChat = async (chatId: string, currentTitle: string) => {
+    const newTitle = await showModal({
+        title: 'Переименовать чат',
+        message: 'Введите новое название для этого чата.',
+        showInput: true,
+        inputValue: currentTitle,
+        confirmText: 'Сохранить'
+    });
+    if (typeof newTitle === 'string' && newTitle.trim() && newTitle.trim() !== currentTitle) {
+        try {
+            const response = await fetch(`/api/v1/chats/${chatId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_title: newTitle.trim() })
+            });
+            if (!response.ok) throw new Error('Failed to rename chat');
+            await loadChats();
+        } catch (error) {
+            console.error("Error renaming chat:", error);
+        }
+    }
+  };
+
+  const handleDeleteChat = async (chatId: string) => {
+    const confirmed = await showModal({
+        title: 'Удалить чат?',
+        message: 'Вы уверены, что хотите удалить этот чат? Это действие необратимо.',
+        confirmText: 'Удалить'
+    });
+    if (confirmed) {
+        try {
+            const response = await fetch(`/api/v1/chats/${chatId}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error('Failed to delete chat');
+            
+            if (currentChatId === chatId) {
+                startNewChat();
+            }
+            await loadChats();
+        } catch (error) {
+            console.error("Error deleting chat:", error);
+        }
+    }
+  };
 
   useEffect(() => {
     loadChats();
@@ -141,6 +185,23 @@ function App() {
     }
   };
 
+  const showModal = (props: Partial<Omit<ModalState, 'visible' | 'onConfirm'>>) => {
+    return new Promise<string | boolean | null>((resolve) => {
+      setModalState({
+        visible: true,
+        title: props.title || '',
+        message: props.message || '',
+        showInput: props.showInput || false,
+        inputValue: props.inputValue || '',
+        confirmText: props.confirmText || 'OK',
+        onConfirm: (value) => {
+          setModalState(prev => ({...prev, visible: false}));
+          resolve(value);
+        },
+      });
+    });
+  };
+
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
@@ -174,14 +235,15 @@ function App() {
           <button className="new-chat-btn" onClick={startNewChat}>
             <i className="bi bi-plus-lg"></i> Новый чат
           </button>
-          <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}>
-            <FaTimes />
-          </button>
         </div>
         <ul className="chat-list">
             {chats.map(chat => (
                 <li key={chat.id} className={`chat-list-item ${chat.id === currentChatId ? 'active' : ''}`} onClick={() => selectChat(chat.id)}>
                     <span className="chat-title">{chat.title}</span>
+                    <div className="chat-actions">
+                        <button title="Переименовать" onClick={(e) => { e.stopPropagation(); handleRenameChat(chat.id, chat.title); }}><FaPencilAlt /></button>
+                        <button title="Удалить" onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}><FaTrash /></button>
+                    </div>
                 </li>
             ))}
         </ul>
@@ -248,6 +310,19 @@ function App() {
             <div className="modal-box" onClick={(e) => e.stopPropagation()}>
                 <h3>{modalState.title}</h3>
                 <p>{modalState.message}</p>
+                {modalState.showInput && (
+                    <input
+                        type="text"
+                        className="modal-input"
+                        value={modalState.inputValue}
+                        onChange={(e) => setModalState(prev => ({...prev, inputValue: e.target.value }))}
+                        autoFocus
+                    />
+                )}
+                <div className="modal-actions">
+                    <button className="modal-btn-cancel" onClick={() => modalState.onConfirm(null)}>Отмена</button>
+                    <button className="modal-btn-confirm" onClick={() => modalState.onConfirm(modalState.showInput ? modalState.inputValue : true)}>{modalState.confirmText}</button>
+                </div>
             </div>
         </div>
       )}
