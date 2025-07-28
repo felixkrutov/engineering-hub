@@ -37,8 +37,12 @@ function App() {
   
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('ai');
-  const [modelName, setModelName] = useState('gemini-2.5-pro');
-  const [systemPrompt, setSystemPrompt] = useState('');
+
+  const [dirtyModelName, setDirtyModelName] = useState('gemini-2.5-pro');
+  const [dirtySystemPrompt, setDirtySystemPrompt] = useState('');
+  const [savedModelName, setSavedModelName] = useState('gemini-2.5-pro');
+  const [savedSystemPrompt, setSavedSystemPrompt] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   const [modalState, setModalState] = useState<ModalState>({
     visible: false,
@@ -52,6 +56,21 @@ function App() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const userInputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (isSettingsModalOpen) {
+        setDirtyModelName(savedModelName);
+        setDirtySystemPrompt(savedSystemPrompt);
+    }
+  }, [isSettingsModalOpen, savedModelName, savedSystemPrompt]);
+
+  const handleSaveSettings = async () => {
+    setIsSaving(true);
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    setSavedModelName(dirtyModelName);
+    setSavedSystemPrompt(dirtySystemPrompt);
+    setIsSaving(false);
+  };
   
   const loadChats = async () => {
     try {
@@ -135,7 +154,6 @@ function App() {
   }, []);
 
   const updateTheme = (newTheme: string) => {
-    // This is a placeholder for a potential future API call
     console.log(`Theme updated to ${newTheme}`);
   };
 
@@ -219,6 +237,8 @@ function App() {
     setTheme(newTheme);
     updateTheme(newTheme);
   };
+  
+  const hasChanges = dirtyModelName !== savedModelName || dirtySystemPrompt !== savedSystemPrompt;
 
   return (
     <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
@@ -344,9 +364,9 @@ function App() {
                 {activeSettingsTab === 'ai' && (
                   <div className="ai-settings">
                     <label htmlFor="model-name">Модель</label>
-                    <input id="model-name" type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} />
+                    <input id="model-name" type="text" value={dirtyModelName} onChange={(e) => setDirtyModelName(e.target.value)} />
                     <label htmlFor="system-prompt">Системный промпт</label>
-                    <textarea id="system-prompt" rows={10} value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} />
+                    <textarea id="system-prompt" rows={10} value={dirtySystemPrompt} onChange={(e) => setDirtySystemPrompt(e.target.value)} />
                   </div>
                 )}
                 {activeSettingsTab === 'db' && (
@@ -357,7 +377,13 @@ function App() {
               </div>
             </div>
             <div className="modal-footer">
-              <button className="modal-btn-confirm">Сохранить</button>
+               <button
+                className={`modal-btn-confirm ${!hasChanges || isSaving ? 'disabled' : ''}`}
+                onClick={handleSaveSettings}
+                disabled={!hasChanges || isSaving}
+              >
+                {isSaving ? <ClipLoader color="#ffffff" size={16} /> : 'Сохранить'}
+              </button>
             </div>
           </div>
         </div>
