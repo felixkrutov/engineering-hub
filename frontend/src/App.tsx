@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
-import { FaPaperPlane, FaBars } from 'react-icons/fa';
+import { FaPaperPlane, FaBars, FaTimes } from 'react-icons/fa';
 import './App.css';
 
 interface Chat {
@@ -224,8 +224,8 @@ function App() {
 
   return (
     <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
-      <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(false)}>
-        <FaBars />
+       <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
+        {sidebarCollapsed ? <FaBars /> : <FaTimes />}
       </button>
 
       <aside className="sidebar">
@@ -234,7 +234,7 @@ function App() {
             <i className="bi bi-plus-lg"></i> Новый чат
           </button>
           <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}>
-            <i className="bi bi-layout-sidebar-inset-reverse"></i>
+            <FaTimes />
           </button>
         </div>
         <ul className="chat-list">
