@@ -46,12 +46,13 @@ class MessagePart(BaseModel):
 async def list_chats():
     chats = []
     os.makedirs(HISTORY_DIR, exist_ok=True)
-    for filename in os.listdir(HISTORY_DIR):
+    for filename in sorted(os.listdir(HISTORY_DIR), reverse=True):
         if filename.endswith(".json"):
             conversation_id = filename[:-5]
             title = "Untitled Chat"
             try:
-                with open(os.path.join(HISTORY_DIR, filename), 'r') as f:
+                filepath = os.path.join(HISTORY_DIR, filename)
+                with open(filepath, 'r') as f:
                     history = json.load(f)
                     if history:
                         first_user_message = next((item for item in history if item.get('role') == 'user'), None)
@@ -62,7 +63,7 @@ async def list_chats():
             chats.append(ChatInfo(id=conversation_id, title=title))
     return chats
 
-@app.get("/api/v1/chats/{conversation_id}", response_model=List[MessagePart])
+@app.get("/api/v1/chats/{conversation_id}", response_model=List[dict])
 async def get_chat_history(conversation_id: str):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     if not os.path.exists(history_file_path):
@@ -70,8 +71,16 @@ async def get_chat_history(conversation_id: str):
     
     try:
         with open(history_file_path, 'r') as f:
-            history = json.load(f)
-        return history
+            history_data = json.load(f)
+        
+        # Convert "parts" to "content" for frontend compatibility
+        formatted_history = []
+        for item in history_data:
+            formatted_history.append({
+                "role": item.get("role"),
+                "content": item.get("parts", [""])[0]
+            })
+        return formatted_history
     except (json.JSONDecodeError, FileNotFoundError):
         raise HTTPException(status_code=500, detail="Could not read chat history file.")
 
