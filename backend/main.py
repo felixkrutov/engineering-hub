@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 load_dotenv()
 
@@ -34,9 +34,50 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
 
+class ChatInfo(BaseModel):
+    id: str
+    title: str
+
+class MessagePart(BaseModel):
+    role: str
+    parts: List[str]
+
+@app.get("/api/v1/chats", response_model=List[ChatInfo])
+async def list_chats():
+    chats = []
+    os.makedirs(HISTORY_DIR, exist_ok=True)
+    for filename in os.listdir(HISTORY_DIR):
+        if filename.endswith(".json"):
+            conversation_id = filename[:-5]
+            title = "Untitled Chat"
+            try:
+                with open(os.path.join(HISTORY_DIR, filename), 'r') as f:
+                    history = json.load(f)
+                    if history:
+                        first_user_message = next((item for item in history if item.get('role') == 'user'), None)
+                        if first_user_message and first_user_message.get('parts'):
+                           title = first_user_message['parts'][0][:50]
+            except (json.JSONDecodeError, IndexError):
+                pass
+            chats.append(ChatInfo(id=conversation_id, title=title))
+    return chats
+
+@app.get("/api/v1/chats/{conversation_id}", response_model=List[MessagePart])
+async def get_chat_history(conversation_id: str):
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    if not os.path.exists(history_file_path):
+        raise HTTPException(status_code=404, detail="Chat history not found.")
+    
+    try:
+        with open(history_file_path, 'r') as f:
+            history = json.load(f)
+        return history
+    except (json.JSONDecodeError, FileNotFoundError):
+        raise HTTPException(status_code=500, detail="Could not read chat history file.")
+
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     conversation_id = request.conversation_id
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     
