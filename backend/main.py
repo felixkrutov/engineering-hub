@@ -1,9 +1,11 @@
 import os
+import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Dict, List
 
 load_dotenv()
 
@@ -14,33 +16,53 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
-router = APIRouter(prefix="/mossaassistant/api")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+HISTORY_DIR = "chat_histories"
 
 class ChatRequest(BaseModel):
-    user_message: Optional[str] = None
-    chat_id: Optional[int] = None
+    message: str
+    conversation_id: str
 
-class ThemeRequest(BaseModel):
-    theme: str
+class ChatResponse(BaseModel):
+    reply: str
 
-@router.get("/chats")
-async def get_chats():
-    return {"chats": []}
+@app.post("/api/v1/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    model = genai.GenerativeModel('gemini-pro')
+    conversation_id = request.conversation_id
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    
+    history = []
+    os.makedirs(HISTORY_DIR, exist_ok=True)
 
-@router.get("/chats/{chat_id}/messages")
-async def get_messages(chat_id: int):
-    return {"messages": []}
+    if os.path.exists(history_file_path):
+        with open(history_file_path, 'r') as f:
+            try:
+                history = json.load(f)
+            except json.JSONDecodeError:
+                history = []
 
-@router.put("/user/theme")
-async def update_theme(request: ThemeRequest):
-    return {"status": "ok"}
+    try:
+        chat_session = model.start_chat(history=history)
+        
+        response = await chat_session.send_message_async(request.message)
+        
+        history.append({"role": "user", "parts": [request.message]})
+        history.append({"role": "model", "parts": [response.text]})
 
-@router.post("/chat")
-async def handle_chat(request: ChatRequest):
-    response = {
-        "ai_response": f"You said: {request.user_message}",
-        "is_new_chat": False
-    }
-    return response
+        with open(history_file_path, 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        return ChatResponse(reply=response.text)
 
-app.include_router(router)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred with the AI service.")
