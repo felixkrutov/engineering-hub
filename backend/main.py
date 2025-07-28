@@ -2,7 +2,7 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
@@ -37,33 +37,38 @@ class ChatResponse(BaseModel):
 class ChatInfo(BaseModel):
     id: str
     title: str
-
-class MessagePart(BaseModel):
-    role: str
-    parts: List[str]
+    
+class RenameRequest(BaseModel):
+    new_title: str
 
 @app.get("/api/v1/chats", response_model=List[ChatInfo])
 async def list_chats():
     chats = []
     os.makedirs(HISTORY_DIR, exist_ok=True)
-    for filename in sorted(os.listdir(HISTORY_DIR), reverse=True):
+    for filename in sorted(os.listdir(HISTORY_DIR)):
         if filename.endswith(".json"):
             conversation_id = filename[:-5]
+            title_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
             title = "Untitled Chat"
-            try:
-                filepath = os.path.join(HISTORY_DIR, filename)
-                with open(filepath, 'r') as f:
-                    history = json.load(f)
-                    if history:
-                        first_user_message = next((item for item in history if item.get('role') == 'user'), None)
-                        if first_user_message and first_user_message.get('parts'):
-                           title = first_user_message['parts'][0][:50]
-            except (json.JSONDecodeError, IndexError):
-                pass
-            chats.append(ChatInfo(id=conversation_id, title=title))
-    return chats
 
-@app.get("/api/v1/chats/{conversation_id}", response_model=List[dict])
+            if os.path.exists(title_path):
+                with open(title_path, 'r') as f:
+                    title = f.read().strip() or title
+            else:
+                try:
+                    with open(os.path.join(HISTORY_DIR, filename), 'r') as f:
+                        history = json.load(f)
+                        if history:
+                            first_user_message = next((item for item in history if item.get('role') == 'user'), None)
+                            if first_user_message and first_user_message.get('parts'):
+                               title = first_user_message['parts'][0][:50]
+                except (json.JSONDecodeError, IndexError):
+                    pass
+            chats.append(ChatInfo(id=conversation_id, title=title))
+    return sorted(chats, key=lambda x: x.id, reverse=True)
+
+
+@app.get("/api/v1/chats/{conversation_id}")
 async def get_chat_history(conversation_id: str):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     if not os.path.exists(history_file_path):
@@ -73,7 +78,6 @@ async def get_chat_history(conversation_id: str):
         with open(history_file_path, 'r') as f:
             history_data = json.load(f)
         
-        # Convert "parts" to "content" for frontend compatibility
         formatted_history = []
         for item in history_data:
             formatted_history.append({
@@ -83,6 +87,39 @@ async def get_chat_history(conversation_id: str):
         return formatted_history
     except (json.JSONDecodeError, FileNotFoundError):
         raise HTTPException(status_code=500, detail="Could not read chat history file.")
+
+@app.delete("/api/v1/chats/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chat(conversation_id: str):
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
+
+    if not os.path.exists(history_file_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    
+    try:
+        os.remove(history_file_path)
+        if os.path.exists(title_file_path):
+            os.remove(title_file_path)
+    except OSError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error deleting chat files: {e}")
+    return
+
+@app.put("/api/v1/chats/{conversation_id}")
+async def rename_chat(conversation_id: str, request: RenameRequest):
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
+
+    if not os.path.exists(history_file_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found, cannot rename.")
+    
+    try:
+        with open(title_file_path, 'w') as f:
+            f.write(request.new_title)
+    except OSError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error writing title file: {e}")
+    
+    return {"status": "success", "message": "Chat renamed"}
+
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
