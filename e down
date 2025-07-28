@@ -1,0 +1,20 @@
+[0;1;32m●[0m bitrix-gpt.service - Bitrix GPT Proxy Service
+     Loaded: loaded (]8;;file://mge-gpt-proxy/etc/systemd/system/bitrix-gpt.service/etc/systemd/system/bitrix-gpt.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Mon 2025-07-28 10:54:10 UTC; 2min 3s ago
+   Main PID: 465868 (uvicorn)
+      Tasks: 12 (limit: 2311)
+     Memory: 358.3M (peak: 360.0M)
+        CPU: 7.476s
+     CGroup: /system.slice/bitrix-gpt.service
+             └─[0;38;5;245m465868 /root/TestServerBitrix/venv/bin/python3 /root/TestServerBitrix/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000[0m
+
+Jul 28 10:54:21 mge-gpt-proxy uvicorn[465868]: Failed to send telemetry event ClientCreateCollectionEvent: capture() takes 1 positional argument but 3 were given
+Jul 28 10:54:21 mge-gpt-proxy uvicorn[465868]: INFO:     Started server process [465868]
+Jul 28 10:54:21 mge-gpt-proxy uvicorn[465868]: INFO:     Waiting for application startup.
+Jul 28 10:54:21 mge-gpt-proxy uvicorn[465868]: INFO:     Application startup complete.
+Jul 28 10:54:21 mge-gpt-proxy uvicorn[465868]: INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+Jul 28 10:54:26 mge-gpt-proxy uvicorn[465868]: INFO: Сервер запущен. Инициализация базы данных...
+Jul 28 10:54:26 mge-gpt-proxy uvicorn[465868]: INFO: Колонка 'theme' уже существует в таблице 'users'.
+Jul 28 10:54:26 mge-gpt-proxy uvicorn[465868]: INFO:     172.18.0.5:40362 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:54:29 mge-gpt-proxy uvicorn[465868]: INFO:     172.18.0.5:40656 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:55:17 mge-gpt-proxy uvicorn[465868]: INFO:     172.18.0.5:35228 - "GET / HTTP/1.0" 200 OK

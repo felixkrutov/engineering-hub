@@ -1,0 +1,20 @@
+[0;1;32m●[0m bitrix-gpt.service - Bitrix GPT Proxy Service
+     Loaded: loaded (]8;;file://mge-gpt-proxy/etc/systemd/system/bitrix-gpt.service/etc/systemd/system/bitrix-gpt.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Wed 2025-07-16 06:17:24 UTC; 1 week 5 days ago
+   Main PID: 260299 (uvicorn)
+      Tasks: 19 (limit: 2311)
+     Memory: 392.7M (peak: 434.3M)
+        CPU: 44min 1.092s
+     CGroup: /system.slice/bitrix-gpt.service
+             └─[0;38;5;245m260299 /root/TestServerBitrix/venv/bin/python3 /root/TestServerBitrix/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000[0m
+
+Jul 28 10:49:17 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:60586 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:17 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:60588 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:45 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:59400 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:46 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:59824 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:46 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:59838 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:47 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:59844 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:47 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:59846 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:48 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:59858 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:49:48 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:59862 - "GET / HTTP/1.0" 200 OK
+Jul 28 10:50:00 mge-gpt-proxy uvicorn[260299]: INFO:     172.18.0.5:32946 - "GET / HTTP/1.0" 200 OK
