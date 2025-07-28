@@ -1,6 +1,17 @@
+import os
+import google.generativeai as genai
+from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter
 from pydantic import BaseModel
 from typing import Optional
+
+load_dotenv()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY environment variable not set!")
+
+genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 router = APIRouter(prefix="/mossaassistant/api")
