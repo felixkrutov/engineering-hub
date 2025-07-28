@@ -50,7 +50,7 @@ services:
     depends_on:
       - frontend
     ports:
-      - "80:80"
+      - "8081:80"  # <--- ВОТ ИЗМЕНЕНИЕ. Порт 80 сервера больше не занят.
     volumes:
       - /etc/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
     restart: unless-stopped
