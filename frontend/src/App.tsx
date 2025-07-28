@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
-import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrash } from 'react-icons/fa';
+import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt } from 'react-icons/fa';
 import { v4 as uuidv4 } from 'uuid';
 import './App.css';
 
@@ -226,14 +226,19 @@ function App() {
 
   return (
     <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
-      <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
-        {sidebarCollapsed ? <FaBars /> : <FaTimes />}
-      </button>
+        {sidebarCollapsed && (
+          <button className="sidebar-reopen-btn" onClick={() => setSidebarCollapsed(false)}>
+            <FaBars />
+          </button>
+        )}
 
       <aside className="sidebar">
         <div className="sidebar-header">
           <button className="new-chat-btn" onClick={startNewChat}>
             <i className="bi bi-plus-lg"></i> Новый чат
+          </button>
+           <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}>
+            <FaTimes />
           </button>
         </div>
         <ul className="chat-list">
@@ -242,7 +247,7 @@ function App() {
                     <span className="chat-title">{chat.title}</span>
                     <div className="chat-actions">
                         <button title="Переименовать" onClick={(e) => { e.stopPropagation(); handleRenameChat(chat.id, chat.title); }}><FaPencilAlt /></button>
-                        <button title="Удалить" onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}><FaTrash /></button>
+                        <button title="Удалить" onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}><FaTrashAlt /></button>
                     </div>
                 </li>
             ))}
