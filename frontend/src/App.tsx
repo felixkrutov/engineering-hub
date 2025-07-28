@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
-import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt } from 'react-icons/fa';
+import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, FaCog } from 'react-icons/fa';
 import { v4 as uuidv4 } from 'uuid';
 import './App.css';
 
@@ -34,6 +34,11 @@ function App() {
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [userInput, setUserInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] = useState('ai');
+  const [modelName, setModelName] = useState('gemini-2.5-pro');
+  const [systemPrompt, setSystemPrompt] = useState('');
 
   const [modalState, setModalState] = useState<ModalState>({
     visible: false,
@@ -129,11 +134,10 @@ function App() {
     loadChats();
   }, []);
 
-  const updateTheme = (newTheme: string) => fetch('/mossaassistant/api/user/theme', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ theme: newTheme })
-  });
+  const updateTheme = (newTheme: string) => {
+    // This is a placeholder for a potential future API call
+    console.log(`Theme updated to ${newTheme}`);
+  };
 
   const scrollToBottom = () => {
     if (chatContainerRef.current) {
@@ -213,15 +217,7 @@ function App() {
   const handleThemeToggle = () => {
     const newTheme = theme === 'dark' ? 'light' : 'dark';
     setTheme(newTheme);
-    updateTheme(newTheme).catch(err => console.error("Ошибка сохранения темы:", err));
-  };
-
-  const handleLogout = () => {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = '/mossaassistant/logout';
-    document.body.appendChild(form);
-    form.submit();
+    updateTheme(newTheme);
   };
 
   return (
@@ -259,10 +255,10 @@ function App() {
           </div>
           <div>
             <button className="theme-toggle-btn" title="Сменить тему" onClick={handleThemeToggle}>
-              {theme === 'dark' ? <i className="bi bi-sun-fill"></i> : <i className="bi bi-moon-fill"></i>}
+              {theme === 'dark' ? <FaSun /> : <FaMoon />}
             </button>
-            <button className="logout-btn" title="Выйти" onClick={handleLogout}>
-              <i className="bi bi-box-arrow-right"></i>
+            <button className="settings-btn" title="Настройки" onClick={() => setIsSettingsModalOpen(true)}>
+              <FaCog />
             </button>
           </div>
         </div>
@@ -329,6 +325,41 @@ function App() {
                     <button className="modal-btn-confirm" onClick={() => modalState.onConfirm(modalState.showInput ? modalState.inputValue : true)}>{modalState.confirmText}</button>
                 </div>
             </div>
+        </div>
+      )}
+
+      {isSettingsModalOpen && (
+        <div className="modal-overlay visible">
+          <div className="modal-box settings-modal">
+            <div className="modal-header">
+              <h2>Настройки</h2>
+              <button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)}>×</button>
+            </div>
+            <div className="modal-content">
+              <div className="tabs">
+                <button className={`tab-btn ${activeSettingsTab === 'ai' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('ai')}>Настройки ИИ</button>
+                <button className={`tab-btn ${activeSettingsTab === 'db' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('db')}>База данных</button>
+              </div>
+              <div className="tab-content">
+                {activeSettingsTab === 'ai' && (
+                  <div className="ai-settings">
+                    <label htmlFor="model-name">Модель</label>
+                    <input id="model-name" type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} />
+                    <label htmlFor="system-prompt">Системный промпт</label>
+                    <textarea id="system-prompt" rows={10} value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} />
+                  </div>
+                )}
+                {activeSettingsTab === 'db' && (
+                  <div className="db-settings">
+                    <p>Управление базой данных будет доступно здесь.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="modal-btn-confirm">Сохранить</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
