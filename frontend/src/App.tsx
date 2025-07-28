@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { ClipLoader } from 'react-spinners';
 import './App.css';
 
 interface Chat {
@@ -31,6 +32,7 @@ function App() {
   const [currentChatId, setCurrentChatId] = useState<number | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [userInput, setUserInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   const [modalState, setModalState] = useState<ModalState>({
     visible: false,
@@ -114,6 +116,7 @@ function App() {
     if (!message || isSending) return;
 
     setIsSending(true);
+    setIsLoading(true);
     
     const lastMessage = messages[messages.length - 1];
     const isConsecutiveUserMessage = lastMessage && lastMessage.role === 'user';
@@ -144,6 +147,7 @@ function App() {
         setMessages(prev => [...prev.filter(m => m.role !== 'ai-loading'), { role: 'ai', content: `Ошибка: ${(error as Error).message}` }]);
     } finally {
         setIsSending(false);
+        setIsLoading(false);
     }
   };
 
@@ -302,7 +306,7 @@ function App() {
                 }}
               />
               <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isSending}>
-                <i className="bi bi-send"></i>
+                {isLoading ? <ClipLoader color="white" loading={true} size={20} /> : <i className="bi bi-send"></i>}
               </button>
             </div>
           </div>
