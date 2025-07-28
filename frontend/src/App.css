@@ -369,10 +369,23 @@ body[data-theme="light"] .app-wrapper,
     cursor: pointer;
     font-weight: bold;
 }
+
 .modal-btn-confirm {
-    background-color: var(--accent-color);
-    color: white;
+  background-color: #4A4A58;
+  color: #EAEAEA;
+  border: 1px solid #636370;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
+
+.modal-btn-confirm:hover {
+  background-color: #5A5A68;
+  border-color: #7D7D8A;
+}
+
 .modal-btn-cancel {
     background-color: var(--bg-input);
     color: var(--text-primary);
