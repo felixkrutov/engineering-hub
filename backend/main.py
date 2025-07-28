@@ -26,6 +26,11 @@ app.add_middleware(
 )
 
 HISTORY_DIR = "chat_histories"
+CONFIG_FILE = "config.json"
+
+class AppConfig(BaseModel):
+    model_name: str
+    system_prompt: str
 
 class ChatRequest(BaseModel):
     message: str
@@ -41,6 +46,32 @@ class ChatInfo(BaseModel):
 class RenameRequest(BaseModel):
     new_title: str
 
+def load_config() -> AppConfig:
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+                return AppConfig(**data)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return AppConfig(model_name='gemini-1.5-flash', system_prompt='')
+
+def save_config(config: AppConfig):
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config.model_dump(), f, indent=2)
+
+@app.get("/api/v1/config", response_model=AppConfig)
+async def get_config():
+    return load_config()
+
+@app.post("/api/v1/config", status_code=status.HTTP_200_OK)
+async def set_config(config: AppConfig):
+    try:
+        save_config(config)
+        return {"status": "success", "message": "Configuration saved."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/chats", response_model=List[ChatInfo])
 async def list_chats():
     chats = []
@@ -50,7 +81,6 @@ async def list_chats():
             conversation_id = filename[:-5]
             title_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
             title = "Untitled Chat"
-
             if os.path.exists(title_path):
                 with open(title_path, 'r') as f:
                     title = f.read().strip() or title
@@ -77,7 +107,6 @@ async def get_chat_history(conversation_id: str):
     try:
         with open(history_file_path, 'r') as f:
             history_data = json.load(f)
-        
         formatted_history = []
         for item in history_data:
             formatted_history.append({
@@ -92,10 +121,8 @@ async def get_chat_history(conversation_id: str):
 async def delete_chat(conversation_id: str):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
-
     if not os.path.exists(history_file_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
-    
     try:
         os.remove(history_file_path)
         if os.path.exists(title_file_path):
@@ -108,22 +135,19 @@ async def delete_chat(conversation_id: str):
 async def rename_chat(conversation_id: str, request: RenameRequest):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
-
     if not os.path.exists(history_file_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found, cannot rename.")
-    
     try:
         with open(title_file_path, 'w') as f:
             f.write(request.new_title)
     except OSError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error writing title file: {e}")
-    
     return {"status": "success", "message": "Chat renamed"}
 
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    config = load_config()
     conversation_id = request.conversation_id
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     
@@ -136,10 +160,12 @@ async def chat(request: ChatRequest):
                 history = json.load(f)
             except json.JSONDecodeError:
                 history = []
-
     try:
+        model = genai.GenerativeModel(
+            model_name=config.model_name,
+            system_instruction=config.system_prompt if config.system_prompt.strip() else None
+        )
         chat_session = model.start_chat(history=history)
-        
         response = await chat_session.send_message_async(request.message)
         
         history.append({"role": "user", "parts": [request.message]})
@@ -151,7 +177,8 @@ async def chat(request: ChatRequest):
         if len(history) == 2:
             try:
                 title_prompt = f"Summarize the following conversation in 5 words or less. Crucially, you must respond in the same language as the conversation. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {response.text}\n\nTitle:"
-                title_response = model.generate_content(title_prompt)
+                title_model = genai.GenerativeModel('gemini-1.5-flash')
+                title_response = title_model.generate_content(title_prompt)
                 chat_title = title_response.text.strip().replace('"', '')
                 title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
                 with open(title_file_path, 'w') as f:
