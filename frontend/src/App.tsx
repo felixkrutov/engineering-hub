@@ -38,9 +38,9 @@ function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('ai');
 
-  const [dirtyModelName, setDirtyModelName] = useState('gemini-2.5-pro');
+  const [dirtyModelName, setDirtyModelName] = useState('');
   const [dirtySystemPrompt, setDirtySystemPrompt] = useState('');
-  const [savedModelName, setSavedModelName] = useState('gemini-2.5-pro');
+  const [savedModelName, setSavedModelName] = useState('');
   const [savedSystemPrompt, setSavedSystemPrompt] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
@@ -64,12 +64,39 @@ function App() {
     }
   }, [isSettingsModalOpen, savedModelName, savedSystemPrompt]);
 
+  const loadConfig = async () => {
+    try {
+      const response = await fetch('/api/v1/config');
+      if (!response.ok) throw new Error('Failed to load config');
+      const config = await response.json();
+      setSavedModelName(config.model_name);
+      setDirtyModelName(config.model_name);
+      setSavedSystemPrompt(config.system_prompt);
+      setDirtySystemPrompt(config.system_prompt);
+    } catch (error) {
+      console.error("Could not load config:", error);
+    }
+  };
+
   const handleSaveSettings = async () => {
     setIsSaving(true);
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    setSavedModelName(dirtyModelName);
-    setSavedSystemPrompt(dirtySystemPrompt);
-    setIsSaving(false);
+    try {
+      const response = await fetch('/api/v1/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_name: dirtyModelName,
+          system_prompt: dirtySystemPrompt,
+        }),
+      });
+      if (!response.ok) throw new Error('Failed to save settings');
+      setSavedModelName(dirtyModelName);
+      setSavedSystemPrompt(dirtySystemPrompt);
+    } catch(error) {
+      console.error("Save settings failed:", error);
+    } finally {
+      setIsSaving(false);
+    }
   };
   
   const loadChats = async () => {
@@ -151,6 +178,7 @@ function App() {
 
   useEffect(() => {
     loadChats();
+    loadConfig();
   }, []);
 
   const updateTheme = (newTheme: string) => {
