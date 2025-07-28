@@ -36,7 +36,7 @@ class ChatResponse(BaseModel):
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    model = genai.GenerativeModel('gemini-pro')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     conversation_id = request.conversation_id
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     
