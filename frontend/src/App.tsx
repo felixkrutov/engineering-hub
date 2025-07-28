@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
+import { FaPaperPlane, FaBars } from 'react-icons/fa';
 import './App.css';
 
 interface Chat {
@@ -224,7 +225,7 @@ function App() {
   return (
     <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
       <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(false)}>
-        <i className="bi bi-layout-sidebar-inset"></i>
+        <FaBars />
       </button>
 
       <aside className="sidebar">
@@ -306,7 +307,7 @@ function App() {
                 }}
               />
               <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isSending}>
-                {isLoading ? <ClipLoader color="white" loading={true} size={20} /> : <i className="bi bi-send"></i>}
+                {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
               </button>
             </div>
           </div>
