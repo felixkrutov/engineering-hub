@@ -14,40 +14,63 @@ interface Message {
   content: string;
 }
 
+interface ModalState {
+  visible: boolean;
+  title: string;
+  message: string;
+  showInput: boolean;
+  inputValue: string;
+  confirmText: string;
+  onConfirm: (value: string | boolean | null) => void;
+}
+
+const user = { username: 'Engineer', theme: 'dark' };
+
 function App() {
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [theme, setTheme] = useState(user.theme);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chats, setChats] = useState<Chat[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [userInput, setUserInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
 
+  const [modalState, setModalState] = useState<ModalState>({
+    visible: false,
+    title: '',
+    message: '',
+    showInput: false,
+    inputValue: '',
+    confirmText: 'OK',
+    onConfirm: () => {},
+  });
+
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const userInputRef = useRef<HTMLTextAreaElement>(null);
+  
   const loadChats = async () => {
     try {
       const response = await fetch('/api/v1/chats');
+      if (!response.ok) throw new Error('Failed to fetch chats');
       const data = await response.json();
       setChats(data);
     } catch (error) {
-      console.error("Failed to load chats:", error);
+      console.error("Ошибка загрузки чатов:", error);
     }
   };
-
+  
   const selectChat = async (chatId: string) => {
     if (isLoading) return;
     setIsLoading(true);
+    setCurrentChatId(chatId);
     try {
       const response = await fetch(`/api/v1/chats/${chatId}`);
-      if (!response.ok) throw new Error("Chat not found");
-      const historyData = await response.json();
-      const formattedMessages: Message[] = historyData.map((item: any) => ({
-        role: item.role,
-        content: item.parts[0],
-      }));
-      setMessages(formattedMessages);
-      setCurrentChatId(chatId);
-    } catch (error) {
-      console.error("Failed to load chat history:", error);
+      if (!response.ok) throw new Error("Chat history not found");
+      const data: Message[] = await response.json();
+      setMessages(data);
+    } catch(error) {
+      console.error("Failed to select chat:", error);
+      setMessages([{ role: 'error', content: 'Could not load this chat.' }]);
     } finally {
       setIsLoading(false);
     }
@@ -62,11 +85,17 @@ function App() {
     loadChats();
   }, []);
 
-  useEffect(() => {
+  const updateTheme = (newTheme: string) => fetch('/mossaassistant/api/user/theme', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme: newTheme })
+  });
+
+  const scrollToBottom = () => {
     if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [messages]);
+  };
 
   const handleSendMessage = async () => {
     const message = userInput.trim();
@@ -76,95 +105,152 @@ function App() {
     const userMessage: Message = { role: 'user', content: message };
     setMessages(prev => [...prev, userMessage]);
     setUserInput('');
-
+    
     const isNewChat = currentChatId === null;
     const conversationId = currentChatId || uuidv4();
 
     try {
-      const response = await fetch('/api/v1/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: message, conversation_id: conversationId }),
-      });
+        const response = await fetch('/api/v1/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: message, conversation_id: conversationId })
+        });
 
-      if (!response.ok) throw new Error('Network response was not ok');
-      const data = await response.json();
-      const modelMessage: Message = { role: 'model', content: data.reply };
-      setMessages(prev => [...prev, modelMessage]);
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+        const modelMessage: Message = { role: 'model', content: data.reply };
+        setMessages(prev => [...prev, modelMessage]);
 
-      if (isNewChat) {
-        setCurrentChatId(conversationId);
-        await loadChats();
-      }
+        if (isNewChat) {
+          setCurrentChatId(conversationId);
+          await loadChats();
+        }
+
     } catch (error) {
-      const errorMessage: Message = { role: 'error', content: 'Sorry, something went wrong.' };
-      setMessages(prev => [...prev, errorMessage]);
+        const errorMessage: Message = { role: 'error', content: 'Sorry, something went wrong. Please try again.' };
+        setMessages(prev => [...prev, errorMessage]);
     } finally {
-      setIsLoading(false);
+        setIsLoading(false);
     }
   };
 
+  const adjustTextareaHeight = () => {
+    if (userInputRef.current) {
+        userInputRef.current.style.height = 'auto';
+        userInputRef.current.style.height = `${userInputRef.current.scrollHeight}px`;
+    }
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [userInput]);
+
+  const handleThemeToggle = () => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    updateTheme(newTheme).catch(err => console.error("Ошибка сохранения темы:", err));
+  };
+
+  const handleLogout = () => {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/mossaassistant/logout';
+    document.body.appendChild(form);
+    form.submit();
+  };
+
   return (
-    <div className={`app-wrapper ${!isSidebarOpen ? 'sidebar-closed' : ''}`}>
+    <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
+      <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
+        {sidebarCollapsed ? <FaBars /> : <FaTimes />}
+      </button>
+
       <aside className="sidebar">
         <div className="sidebar-header">
-          <button className="new-chat-button" onClick={startNewChat}>New Chat</button>
+          <button className="new-chat-btn" onClick={startNewChat}>
+            <i className="bi bi-plus-lg"></i> Новый чат
+          </button>
+          <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}>
+            <FaTimes />
+          </button>
         </div>
         <ul className="chat-list">
-          {chats.map(chat => (
-            <li
-              key={chat.id}
-              className={`chat-list-item ${chat.id === currentChatId ? 'active' : ''}`}
-              onClick={() => selectChat(chat.id)}
-            >
-              {chat.title}
-            </li>
-          ))}
+            {chats.map(chat => (
+                <li key={chat.id} className={`chat-list-item ${chat.id === currentChatId ? 'active' : ''}`} onClick={() => selectChat(chat.id)}>
+                    <span className="chat-title">{chat.title}</span>
+                </li>
+            ))}
         </ul>
+        <div className="sidebar-footer">
+          <div className="user-info">
+            <div className="user-icon">{user.username[0].toUpperCase()}</div>
+            <span>{user.username}</span>
+          </div>
+          <div>
+            <button className="theme-toggle-btn" title="Сменить тему" onClick={handleThemeToggle}>
+              {theme === 'dark' ? <i className="bi bi-sun-fill"></i> : <i className="bi bi-moon-fill"></i>}
+            </button>
+            <button className="logout-btn" title="Выйти" onClick={handleLogout}>
+              <i className="bi bi-box-arrow-right"></i>
+            </button>
+          </div>
+        </div>
       </aside>
 
       <main className="main-content">
-        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="sidebar-toggle">
-          {isSidebarOpen ? <FaTimes /> : <FaBars />}
-        </button>
-
         <div className="chat-area">
           <div className="chat-container" ref={chatContainerRef}>
             {messages.length === 0 ? (
-              <div className="welcome-screen">
-                <h1>Gemini Chat</h1>
-                <p>Select a chat or start a new one.</p>
-              </div>
-            ) : (
-              messages.map((msg, index) => (
-                <div key={index} className={`message-block ${msg.role}`}>
-                  <div className="message-content">{msg.content}</div>
+                <div className="welcome-screen">
+                    <h1>Mossa AI</h1>
+                    <p>Начните новый диалог или выберите существующий</p>
                 </div>
-              ))
+            ) : (
+                messages.map((msg, index) => (
+                    <div key={index} className={`message-block ${msg.role}`}>
+                        <div className="message-content">
+                          <p>{msg.content}</p>
+                        </div>
+                    </div>
+                ))
             )}
           </div>
           <div className="input-area-wrapper">
             <div className="input-area">
               <textarea
+                ref={userInputRef}
                 className="user-input"
-                placeholder="Ask me anything..."
+                placeholder="Спросите что-нибудь..."
                 rows={1}
                 value={userInput}
                 onChange={(e) => setUserInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendMessage();
-                  }
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage();
+                    }
                 }}
               />
-              <button className="send-btn" onClick={handleSendMessage} disabled={!userInput.trim() || isLoading}>
+              <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
                 {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
               </button>
             </div>
           </div>
         </div>
       </main>
+
+      {modalState.visible && (
+        <div className={`modal-overlay visible`} onClick={() => modalState.onConfirm(null)}>
+            <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+                <h3>{modalState.title}</h3>
+                <p>{modalState.message}</p>
+            </div>
+        </div>
+      )}
     </div>
   );
 }
