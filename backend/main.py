@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import google.generativeai as genai
@@ -6,8 +7,20 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
+from apscheduler.schedulers.background import BackgroundScheduler
+from kb_service.connector import MockConnector
+from kb_service.indexer import KnowledgeBaseIndexer
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 load_dotenv()
+
+# Instantiate Knowledge Base services
+kb_connector = MockConnector()
+kb_indexer = KnowledgeBaseIndexer(connector=kb_connector)
+
+# Instantiate Scheduler
+scheduler = BackgroundScheduler()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
@@ -16,6 +29,17 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
+
+def update_kb_index() -> None:
+    kb_indexer.build_index()
+
+@app.on_event("startup")
+def startup_event():
+    logging.info("Application startup: Initializing services...")
+    update_kb_index()
+    scheduler.add_job(update_kb_index, "interval", hours=1)
+    scheduler.start()
+    logging.info("Application startup: Services initialized and scheduler started.")
 
 app.add_middleware(
     CORSMiddleware,
