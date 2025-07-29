@@ -470,3 +470,125 @@ body[data-theme="light"] .app-wrapper,
     display: flex;
     justify-content: flex-end;
 }
+
+/* KB Search Specifics */
+.db-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.kb-search-bar {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.kb-search-bar input {
+    flex-grow: 1;
+    padding: 0.75rem;
+    background-color: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-size: 1rem;
+}
+
+.kb-search-bar button {
+    padding: 0 1rem;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-input);
+    color: var(--text-primary);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.kb-search-bar button:hover:not(:disabled) {
+    background-color: #444;
+}
+
+.app-wrapper[data-theme="light"] .kb-search-bar button:hover:not(:disabled) {
+    background-color: #ddd;
+}
+
+.kb-search-bar button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.kb-search-results {
+    position: relative;
+    min-height: 150px;
+    max-height: 250px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 0.5rem;
+}
+
+.kb-search-results::-webkit-scrollbar {
+    width: 6px;
+}
+.kb-search-results::-webkit-scrollbar-thumb {
+    background-color: #555;
+    border-radius: 3px;
+}
+
+.kb-search-results p {
+    color: var(--text-secondary);
+    text-align: center;
+    padding-top: 3rem;
+}
+
+.kb-search-results .error-message {
+    color: var(--error-color);
+    font-weight: bold;
+}
+
+.kb-search-results .spinner-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    min-height: 140px;
+}
+
+.kb-search-results ul {
+    list-style: none;
+}
+
+.kb-search-results li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.2s ease;
+}
+.kb-search-results li:last-child {
+    border-bottom: none;
+}
+.kb-search-results li:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.kb-search-results li span {
+    word-break: break-all;
+    padding-right: 1rem;
+}
+
+.kb-search-results li button {
+    flex-shrink: 0;
+    padding: 0.4rem 0.8rem;
+    background-color: transparent;
+    border: 1px solid var(--accent-color);
+    color: var(--accent-color);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.kb-search-results li button:hover {
+    background-color: var(--accent-color);
+    color: white;
+}
