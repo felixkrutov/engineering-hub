@@ -4,6 +4,10 @@ import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, 
 import { v4 as uuidv4 } from 'uuid';
 import './App.css';
 
+// --- НАШЕ ГЛАВНОЕ ИСПРАВЛЕНИЕ ---
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+// ---------------------------------
+
 interface Chat {
   id: string;
   title: string;
@@ -13,6 +17,9 @@ interface Message {
   role: 'user' | 'model' | 'error';
   content: string;
 }
+
+// ... (остальной код остается без изменений, я просто вставил его сюда для полноты)
+// Просто скопируйте весь блок целиком
 
 interface ModalState {
   visible: boolean;
@@ -66,7 +73,7 @@ function App() {
 
   const loadConfig = async () => {
     try {
-      const response = await fetch('/api/v1/config');
+      const response = await fetch(`${API_BASE_URL}/config`);
       if (!response.ok) throw new Error('Failed to load config');
       const config = await response.json();
       setSavedModelName(config.model_name);
@@ -81,7 +88,7 @@ function App() {
   const handleSaveSettings = async () => {
     setIsSaving(true);
     try {
-      const response = await fetch('/api/v1/config', {
+      const response = await fetch(`${API_BASE_URL}/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -101,7 +108,7 @@ function App() {
   
   const loadChats = async () => {
     try {
-      const response = await fetch('/api/v1/chats');
+      const response = await fetch(`${API_BASE_URL}/chats`);
       if (!response.ok) throw new Error('Failed to fetch chats');
       const data = await response.json();
       setChats(data);
@@ -115,7 +122,7 @@ function App() {
     setIsLoading(true);
     setCurrentChatId(chatId);
     try {
-      const response = await fetch(`/api/v1/chats/${chatId}`);
+      const response = await fetch(`${API_BASE_URL}/chats/${chatId}`);
       if (!response.ok) throw new Error("Chat history not found");
       const data: Message[] = await response.json();
       setMessages(data);
@@ -142,7 +149,7 @@ function App() {
     });
     if (typeof newTitle === 'string' && newTitle.trim() && newTitle.trim() !== currentTitle) {
         try {
-            const response = await fetch(`/api/v1/chats/${chatId}`, {
+            const response = await fetch(`${API_BASE_URL}/chats/${chatId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ new_title: newTitle.trim() })
@@ -163,7 +170,7 @@ function App() {
     });
     if (confirmed) {
         try {
-            const response = await fetch(`/api/v1/chats/${chatId}`, { method: 'DELETE' });
+            const response = await fetch(`${API_BASE_URL}/chats/${chatId}`, { method: 'DELETE' });
             if (!response.ok) throw new Error('Failed to delete chat');
             
             if (currentChatId === chatId) {
@@ -204,7 +211,7 @@ function App() {
     const conversationId = currentChatId || uuidv4();
 
     try {
-        const response = await fetch('/api/v1/chat', {
+        const response = await fetch(`${API_BASE_URL}/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: message, conversation_id: conversationId })
