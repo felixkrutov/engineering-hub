@@ -5,8 +5,9 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from kb_service.connector import MockConnector
 from kb_service.indexer import KnowledgeBaseIndexer
@@ -95,6 +96,28 @@ async def set_config(config: AppConfig):
         return {"status": "success", "message": "Configuration saved."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/kb/search")
+async def search_kb(query: str) -> List[Dict[str, str]]:
+    logging.info(f"Received search request with query: '{query}'")
+    results = kb_indexer.search(query)
+    return results
+
+@app.get("/api/kb/file/{file_id:path}")
+async def get_kb_file(file_id: str) -> StreamingResponse:
+    logging.info(f"Received request for file content: {file_id}")
+    content = kb_connector.get_file_content(file_id)
+
+    if content is None:
+        logging.error(f"File not found: {file_id}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    file_meta = next((item for item in kb_indexer.index if item["id"] == file_id), None)
+    media_type = "application/octet-stream"
+    if file_meta:
+        media_type = file_meta.get('mime_type', 'application/octet-stream')
+    
+    return StreamingResponse(iter([content]), media_type=media_type)
 
 @app.get("/api/v1/chats", response_model=List[ChatInfo])
 async def list_chats():
