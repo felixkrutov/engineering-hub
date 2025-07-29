@@ -28,6 +28,7 @@ services:
     volumes:
       - ./backend:/app
       - ./chat_histories:/app/chat_histories
+      - ./mock_disk:/app/mock_disk
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
