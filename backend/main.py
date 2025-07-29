@@ -10,14 +10,23 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from kb_service.connector import MockConnector
+from kb_service.yandex_connector import YandexDiskConnector
 from kb_service.indexer import KnowledgeBaseIndexer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 load_dotenv()
 
-# Instantiate Knowledge Base services
-kb_connector = MockConnector()
+# --- Knowledge Base Services Initialization ---
+YANDEX_TOKEN = os.getenv("YANDEX_DISK_API_TOKEN")
+
+if YANDEX_TOKEN:
+    logging.info("YANDEX_DISK_API_TOKEN found. Initializing YandexDiskConnector.")
+    kb_connector = YandexDiskConnector(token=YANDEX_TOKEN)
+else:
+    logging.info("YANDEX_DISK_API_TOKEN not found. Initializing MockConnector as a fallback.")
+    kb_connector = MockConnector()
+
 kb_indexer = KnowledgeBaseIndexer(connector=kb_connector)
 
 # Instantiate Scheduler
