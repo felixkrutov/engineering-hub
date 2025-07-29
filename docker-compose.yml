@@ -19,6 +19,7 @@ services:
   backend:
     build: ./backend
     container_name: engineering-hub-backend
+    command: tail -f /dev/null
     depends_on:
       - db
     environment:
