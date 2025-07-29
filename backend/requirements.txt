@@ -6,3 +6,6 @@ google-generativeai
 python-magic
 apscheduler
 yadisk
+pypdf
+python-docx
+openpyxl
