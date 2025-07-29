@@ -3,3 +3,5 @@ uvicorn[standard]
 pydantic
 python-dotenv
 google-generativeai
+python-magic
+apscheduler
