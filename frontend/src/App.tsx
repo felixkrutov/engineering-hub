@@ -4,7 +4,7 @@ import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, 
 import { v4 as uuidv4 } from 'uuid';
 import './App.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/hub/api';
 
 interface Chat {
   id: string;
@@ -73,7 +73,7 @@ function App() {
 
   const loadConfig = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/config`);
+      const response = await fetch(`${API_BASE_URL}/v1/config`);
       if (!response.ok) throw new Error('Failed to load config');
       const config = await response.json();
       setSavedModelName(config.model_name);
@@ -88,7 +88,7 @@ function App() {
   const handleSaveSettings = async () => {
     setIsSaving(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/config`, {
+      const response = await fetch(`${API_BASE_URL}/v1/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -111,7 +111,7 @@ function App() {
     setIsKbSearching(true);
     setKbError(null);
     try {
-      const url = `${API_BASE_URL.replace('/v1', '')}/kb/search?query=${encodeURIComponent(kbSearchQuery)}`;
+      const url = `${API_BASE_URL}/kb/search?query=${encodeURIComponent(kbSearchQuery)}`;
       console.log('Fetching from URL:', url);
       const response = await fetch(url);
       if (!response.ok) {
@@ -139,7 +139,7 @@ function App() {
   
   const loadChats = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/chats`);
+      const response = await fetch(`${API_BASE_URL}/v1/chats`);
       if (!response.ok) throw new Error('Failed to fetch chats');
       const data = await response.json();
       setChats(data);
@@ -153,7 +153,7 @@ function App() {
     setIsLoading(true);
     setCurrentChatId(chatId);
     try {
-      const response = await fetch(`${API_BASE_URL}/chats/${chatId}`);
+      const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
       if (!response.ok) throw new Error("Chat history not found");
       const data: Message[] = await response.json();
       setMessages(data);
@@ -180,7 +180,7 @@ function App() {
     });
     if (typeof newTitle === 'string' && newTitle.trim() && newTitle.trim() !== currentTitle) {
         try {
-            const response = await fetch(`${API_BASE_URL}/chats/${chatId}`, {
+            const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ new_title: newTitle.trim() })
@@ -201,7 +201,7 @@ function App() {
     });
     if (confirmed) {
         try {
-            const response = await fetch(`${API_BASE_URL}/chats/${chatId}`, { method: 'DELETE' });
+            const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, { method: 'DELETE' });
             if (!response.ok) throw new Error('Failed to delete chat');
             
             if (currentChatId === chatId) {
@@ -242,7 +242,7 @@ function App() {
     const conversationId = currentChatId || uuidv4();
 
     try {
-        const response = await fetch(`${API_BASE_URL}/chat`, {
+        const response = await fetch(`${API_BASE_URL}/v1/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: message, conversation_id: conversationId })
