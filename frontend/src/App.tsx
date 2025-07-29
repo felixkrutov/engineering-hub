@@ -4,9 +4,7 @@ import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, 
 import { v4 as uuidv4 } from 'uuid';
 import './App.css';
 
-// --- НАШЕ ГЛАВНОЕ ИСПРАВЛЕНИЕ ---
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-// ---------------------------------
 
 interface Chat {
   id: string;
@@ -17,9 +15,6 @@ interface Message {
   role: 'user' | 'model' | 'error';
   content: string;
 }
-
-// ... (остальной код остается без изменений, я просто вставил его сюда для полноты)
-// Просто скопируйте весь блок целиком
 
 interface ModalState {
   visible: boolean;
@@ -50,6 +45,11 @@ function App() {
   const [savedModelName, setSavedModelName] = useState('');
   const [savedSystemPrompt, setSavedSystemPrompt] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  
+  const [kbSearchQuery, setKbSearchQuery] = useState('');
+  const [kbSearchResults, setKbSearchResults] = useState<any[]>([]);
+  const [isKbSearching, setIsKbSearching] = useState(false);
+  const [kbError, setKbError] = useState<string | null>(null);
 
   const [modalState, setModalState] = useState<ModalState>({
     visible: false,
@@ -104,6 +104,37 @@ function App() {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleKbSearch = async () => {
+    console.info('Initiating KB search for query:', kbSearchQuery);
+    setIsKbSearching(true);
+    setKbError(null);
+    try {
+      const url = `${API_BASE_URL.replace('/v1', '')}/kb/search?query=${encodeURIComponent(kbSearchQuery)}`;
+      console.log('Fetching from URL:', url);
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.error('KB search failed with status:', response.status);
+        throw new Error('Search request failed');
+      }
+      const data = await response.json();
+      console.info('KB search successful. Found items:', data);
+      setKbSearchResults(data);
+    } catch (error) {
+      console.error('An error occurred during KB search:', error);
+      setKbError('Не удалось выполнить поиск. Проверьте консоль для деталей.');
+    } finally {
+      setIsKbSearching(false);
+    }
+  };
+
+  const handleUseFile = (file: any) => {
+    console.info('"Use file" button clicked for file:', file);
+    const message = `Проанализируй следующий файл: ${file.name}`;
+    setUserInput(message);
+    setIsSettingsModalOpen(false);
+    userInputRef.current?.focus();
   };
   
   const loadChats = async () => {
@@ -406,7 +437,37 @@ function App() {
                 )}
                 {activeSettingsTab === 'db' && (
                   <div className="db-settings">
-                    <p>Управление базой данных будет доступно здесь.</p>
+                    <div className="kb-search-bar">
+                      <input
+                        type="text"
+                        placeholder="Поиск по документам..."
+                        value={kbSearchQuery}
+                        onChange={(e) => setKbSearchQuery(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleKbSearch(); }}
+                      />
+                      <button onClick={handleKbSearch} disabled={isKbSearching || !kbSearchQuery.trim()}>
+                        {isKbSearching ? <ClipLoader color="#333" size={16} /> : 'Найти'}
+                      </button>
+                    </div>
+                    <div className="kb-search-results">
+                      {kbError && <p className="error-message">{kbError}</p>}
+                      {isKbSearching ? (
+                        <div className="spinner-container"><ClipLoader color="#888" size={30} /></div>
+                      ) : (
+                        kbSearchResults.length > 0 ? (
+                          <ul>
+                            {kbSearchResults.map((file) => (
+                              <li key={file.id}>
+                                <span>{file.name} (Тип: {file.mime_type})</span>
+                                <button onClick={() => handleUseFile(file)}>Использовать</button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p>Результаты поиска появятся здесь.</p>
+                        )
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
