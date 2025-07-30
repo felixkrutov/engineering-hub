@@ -7,17 +7,18 @@ interface Step {
 
 interface AgentThoughtsProps {
   steps: Step[] | null;
+  defaultCollapsed: boolean;
 }
 
-const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps }) => {
-  const [isCollapsed, setIsCollapsed] = useState(true);
+const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed }) => {
+  const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (contentRef.current) {
+    if (contentRef.current && !isCollapsed) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
-  }, [steps]);
+  }, [steps, isCollapsed]);
 
   if (!steps || steps.length === 0) {
     return null;
@@ -28,6 +29,7 @@ const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps }) => {
       thought: '[Анализ]',
       tool_call: '[Действие]',
       tool_result: '[Результат]',
+      error: '[Ошибка]',
     };
     return typeMap[type] || '[Шаг]';
   };
@@ -38,15 +40,13 @@ const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps }) => {
         <h5>Мыслительный процесс</h5>
         <button>{isCollapsed ? 'Развернуть' : 'Свернуть'}</button>
       </div>
-      {!isCollapsed && (
-        <div className="agent-thoughts-content" ref={contentRef}>
-          {steps.map((step, index) => (
-            <div key={index}>
-              {`${getPrefix(step.type)} ${step.content}`}
-            </div>
-          ))}
-        </div>
-      )}
+      <div className={`agent-thoughts-content ${isCollapsed ? 'collapsed' : ''}`} ref={contentRef}>
+        {steps.map((step, index) => (
+          <div key={index} className="thought-step">
+            {`${getPrefix(step.type)} ${step.content}`}
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
