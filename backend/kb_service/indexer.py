@@ -11,7 +11,7 @@ class KnowledgeBaseIndexer:
 
     def build_index(self) -> None:
         logger.info("Starting knowledge base index build.")
-        self.index = self.connector.list_files_recursive()
+        self.index = self.connector.list_files_recursive('/')
         logger.info(f"Knowledge base index build complete. Indexed {len(self.index)} files.")
 
     def search(self, query: str) -> List[Dict[str, str]]:
