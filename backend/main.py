@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
+from google.generativeai.types import Part, FunctionResponse
 
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
@@ -44,6 +45,29 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set!")
 
 genai.configure(api_key=GEMINI_API_KEY)
+
+# --- Agent Tools Definition ---
+def get_document_content(file_id: str) -> str:
+    """
+    Reads the content of a document specified by its file_id.
+    Returns the text content or an error message.
+    """
+    logger.info(f"TOOL CALL: get_document_content for file_id: {file_id}")
+    try:
+        file_info = kb_indexer.get_file_by_id(file_id)
+        if not file_info:
+            return f"ОШИБКА: Файл с id '{file_id}' не найден в базе знаний."
+
+        file_content = kb_connector.get_file_content(file_id)
+        if not file_content:
+            return f"ОШИБКА: Не удалось получить содержимое файла '{file_info['name']}'."
+        
+        parsed_text = parse_document(file_info['name'], file_content, file_info['mime_type'])
+        return parsed_text
+    except Exception as e:
+        logger.error(f"Error in get_document_content tool for file_id {file_id}: {e}", exc_info=True)
+        return f"ОШИБКА: Произошла внутренняя ошибка при обработке файла: {e}"
+
 
 app = FastAPI()
 
@@ -111,7 +135,7 @@ def load_config() -> AppConfig:
                 return AppConfig(**data)
     except (json.JSONDecodeError, TypeError):
         pass
-    return AppConfig(model_name='gemini-1.5-flash', system_prompt='')
+    return AppConfig(model_name='gemini-1.5-pro', system_prompt='')
 
 def save_config(config: AppConfig):
     with open(CONFIG_FILE, 'w') as f:
@@ -230,7 +254,6 @@ async def rename_chat(conversation_id: str, request: RenameRequest):
 
 @app.post("/api/v1/chat")
 async def chat(request: ChatRequest) -> Any:
-    # This endpoint is kept for non-streaming compatibility if needed, but the primary is now stream_chat
     response = ChatResponse(reply="Please use the /api/v1/chat/stream endpoint for chat functionality.", error=True)
     return JSONResponse(status_code=400, content=response.model_dump())
 
@@ -241,82 +264,64 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         conversation_id = request.conversation_id
         history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
         os.makedirs(HISTORY_DIR, exist_ok=True)
+        final_answer_text = "Произошла ошибка при обработке ответа."
 
-        history = []
-        if os.path.exists(history_file_path):
-            with open(history_file_path, 'r') as f:
-                try:
-                    history = json.load(f)
-                except json.JSONDecodeError:
-                    history = []
-        
-        final_answer_text = ""
+        async def yield_and_store(step_data: Dict[str, str]):
+            steps_history.append(step_data)
+            yield f"data: {json.dumps(step_data)}\n\n"
+            await asyncio.sleep(0.1)
 
         try:
-            step = {'type': 'thought', 'content': 'Задача получена. Анализирую запрос...'}
-            steps_history.append(step)
-            yield f"data: {json.dumps(step)}\n\n"
-            await asyncio.sleep(0.2)
-
-            final_message_for_llm = request.message
-
-            if request.file_id:
-                step = {'type': 'tool_call', 'content': f"Поиск метаданных файла: {request.file_id}"}
-                steps_history.append(step)
-                yield f"data: {json.dumps(step)}\n\n"
-                file_info = kb_indexer.get_file_by_id(request.file_id)
-                if not file_info:
-                    raise FileNotFoundError(f"Файл с id {request.file_id} не найден в индексе.")
-                
-                step = {'type': 'tool_call', 'content': f"Скачивание файла '{file_info['name']}'..."}
-                steps_history.append(step)
-                yield f"data: {json.dumps(step)}\n\n"
-                file_content = kb_connector.get_file_content(request.file_id)
-                if not file_content:
-                     raise FileNotFoundError(f"Не удалось получить содержимое файла с id {request.file_id}.")
-
-                step = {'type': 'tool_call', 'content': f"Анализ и извлечение текста из файла '{file_info['name']}'..."}
-                steps_history.append(step)
-                yield f"data: {json.dumps(step)}\n\n"
-                document_text = parse_document(file_info['name'], file_content, file_info['mime_type'])
-                
-                if "НЕПОДДЕРЖИВАЕМЫЙ" in document_text or "[Error" in document_text or "Ошибка" in document_text:
-                    step = {'type': 'tool_result', 'content': f"Ошибка анализа файла: {document_text}"}
-                    steps_history.append(step)
-                    yield f"data: {json.dumps(step)}\n\n"
-                    final_answer_text = f"К сожалению, не удалось обработать файл '{file_info['name']}'. Причина: {document_text}"
-                else:
-                    step = {'type': 'tool_result', 'content': f"Успешно извлечено {len(document_text)} символов из файла."}
-                    steps_history.append(step)
-                    yield f"data: {json.dumps(step)}\n\n"
-
-                    step = {'type': 'thought', 'content': 'Текст успешно извлечен. Формирую контекст для языковой модели...'}
-                    steps_history.append(step)
-                    yield f"data: {json.dumps(step)}\n\n"
-                    final_message_for_llm = f"Context from file '{file_info['name']}':\n\n{document_text}\n\nUser query: {request.message}"
+            config = load_config()
+            model = genai.GenerativeModel(
+                model_name=config.model_name,
+                system_instruction=config.system_prompt,
+                tools=[get_document_content]
+            )
+            chat = model.start_chat(enable_automatic_function_calling=False)
             
-            if not final_answer_text:
-                config = load_config()
-                step = {'type': 'thought', 'content': f"Отправка запроса к языковой модели ({config.model_name})..."}
-                steps_history.append(step)
-                yield f"data: {json.dumps(step)}\n\n"
+            history = []
+            if os.path.exists(history_file_path):
+                with open(history_file_path, 'r') as f:
+                    history = json.load(f)
 
-                model = genai.GenerativeModel(
-                    model_name=config.model_name,
-                    system_instruction=config.system_prompt if config.system_prompt.strip() else None
-                )
-                chat_session = model.start_chat(history=history)
-                response = await chat_session.send_message_async(final_message_for_llm)
-                final_answer_text = response.text
+            initial_prompt = request.message
+            if request.file_id:
+                initial_prompt += f"\n\n[Контекст файла: для анализа файла используй инструмент get_document_content с file_id='{request.file_id}']"
+            
+            await yield_and_store({'type': 'thought', 'content': 'Отправляю первоначальный запрос модели...'})
+            response = chat.send_message(initial_prompt)
+
+            while True:
+                part = response.candidates[0].content.parts[0]
+                
+                if part.function_call.name:
+                    fc = part.function_call
+                    await yield_and_store({'type': 'thought', f'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"})
+                    
+                    if fc.name == 'get_document_content':
+                        tool_result = get_document_content(file_id=fc.args['file_id'])
+                    else:
+                        tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
+
+                    await yield_and_store({'type': 'tool_result', 'content': tool_result})
+                    
+                    response = chat.send_message(
+                        Part(function_response=FunctionResponse(name=fc.name, response={"content": tool_result}))
+                    )
+                elif part.text:
+                    final_answer_text = part.text
+                    break
+                else:
+                    final_answer_text = "Модель вернула пустой ответ."
+                    break
 
         except Exception as e:
-            logger.error(f"Error during stream processing for conversation {conversation_id}: {e}", exc_info=True)
-            error_content = f"Произошла критическая ошибка: {str(e)}"
-            step = {'type': 'error', 'content': error_content}
-            steps_history.append(step)
-            yield f"data: {json.dumps(step)}\n\n"
-            final_answer_text = "К сожалению, во время обработки вашего запроса произошла ошибка. Пожалуйста, попробуйте еще раз."
-
+            logger.error(f"Error during agent loop for conversation {conversation_id}: {e}", exc_info=True)
+            error_content = f"Критическая ошибка в цикле агента: {str(e)}"
+            await yield_and_store({'type': 'error', 'content': error_content})
+            final_answer_text = "К сожалению, произошла ошибка. Не удалось завершить мыслительный процесс."
+        
         user_message = Message(role="user", parts=[request.message])
         model_message = Message(
             role="model",
@@ -329,7 +334,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
         with open(history_file_path, 'w') as f:
             json.dump(history, f, indent=2)
-        logger.info(f"Chat history for {conversation_id} saved with thinking steps.")
         
         if len(history) == 2:
              try:
@@ -343,7 +347,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
              except Exception as e:
                 logger.warning(f"An error occurred during title generation: {e}")
 
-        final_answer_data = {'type': 'final_answer', 'content': final_answer_text}
-        yield f"data: {json.dumps(final_answer_data)}\n\n"
+        await yield_and_store({'type': 'final_answer', 'content': final_answer_text})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
