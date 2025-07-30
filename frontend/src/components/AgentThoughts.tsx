@@ -15,11 +15,17 @@ const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed, 
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   const contentRef = useRef<HTMLDivElement>(null);
 
+  // 1. Улучшаем эффект для плавной прокрутки вниз
   useEffect(() => {
-    if (contentRef.current && !isCollapsed) {
-      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    const container = contentRef.current;
+    if (container && !isCollapsed) {
+      // Используем scrollTo с опцией 'smooth' для плавной анимации
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth'
+      });
     }
-  }, [steps, isCollapsed]);
+  }, [steps, isCollapsed]); // Эффект срабатывает при добавлении нового шага
 
   if (!steps || steps.length === 0) {
     return null;
@@ -32,7 +38,7 @@ const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed, 
       tool_result: '[Результат]',
       error: '[Ошибка]',
     };
-    return typeMap[type] || '[Шаг]';
+    return typeMap[type] || '➡️ [Шаг]';
   };
 
   return (
@@ -41,10 +47,30 @@ const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed, 
         <h5>Мыслительный процесс</h5>
         <button>{isCollapsed ? 'Развернуть' : 'Свернуть'}</button>
       </div>
-      <div className={`agent-thoughts-content ${isCollapsed ? 'collapsed' : ''}`} ref={contentRef}>
+
+      {/* 2. Применяем стили напрямую к контейнеру с контентом */}
+      <div 
+        className={`agent-thoughts-content ${isCollapsed ? 'collapsed' : ''}`} 
+        ref={contentRef}
+        style={{
+          // Задаем максимальную высоту. Блок не будет расти больше этого значения.
+          maxHeight: '300px', 
+          // Добавляем вертикальную прокрутку, если содержимое не помещается.
+          overflowY: 'auto',
+          // Скрываем контент, если блок свернут (для плавности анимации).
+          // Обрати внимание: этот стиль работает вместе с твоим классом `collapsed`.
+          // Если твой CSS для `collapsed` уже делает это, то можно убрать. Но так надежнее.
+          display: isCollapsed ? 'none' : 'block',
+          // Дополнительные стили для красоты
+          backgroundColor: '#2d2d2d',
+          padding: '10px',
+          borderRadius: '8px',
+        }}
+      >
         {steps.map((step, index) => (
           <div key={index} className="thought-step">
-            {`${getPrefix(step.type)} ${step.content}`}
+            {/* Используем getPrefix для отображения иконки и текста */}
+            <span style={{ whiteSpace: 'pre-wrap' }}>{`${getPrefix(step.type)} ${step.content}`}</span>
           </div>
         ))}
       </div>
