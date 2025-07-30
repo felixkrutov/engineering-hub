@@ -1,3 +1,5 @@
+# backend/main.py
+
 import logging
 import os
 import json
@@ -13,7 +15,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-# [ИЗМЕНЕНИЕ 1] Исправляем импорт. Теперь импортируем весь модуль types.
+# [УЛУЧШЕНИЕ] Импортируем весь модуль types для явного и стабильного доступа к типам, таким как Part и FunctionResponse.
 from google.generativeai import types
 
 from kb_service.connector import MockConnector
@@ -37,8 +39,6 @@ else:
     kb_connector = MockConnector()
 
 kb_indexer = KnowledgeBaseIndexer(connector=kb_connector)
-
-# Instantiate Scheduler
 scheduler = BackgroundScheduler()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -49,10 +49,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # --- Agent Tools Definition ---
 def get_document_content(file_id: str) -> str:
-    """
-    Reads the content of a document specified by its file_id.
-    Returns the text content or an error message.
-    """
     logger.info(f"TOOL CALL: get_document_content for file_id: {file_id}")
     try:
         file_info = kb_indexer.get_file_by_id(file_id)
@@ -79,7 +75,7 @@ def update_kb_index() -> None:
 def startup_event():
     logging.info("Application startup: Initializing services...")
     update_kb_index()
-    scheduler.add_job(update_kb_index, "interval", hours=1)
+    scheduler.add_job(update_kb_index, "interval", hours=1, id="update_kb_index_job")
     scheduler.start()
     logging.info("Application startup: Services initialized and scheduler started.")
 
@@ -95,7 +91,6 @@ HISTORY_DIR = "chat_histories"
 CONFIG_FILE = "config.json"
 
 # --- Pydantic Models ---
-
 class AppConfig(BaseModel):
     model_name: str
     system_prompt: str
@@ -127,11 +122,10 @@ class Message(BaseModel):
 
 
 # --- API Endpoints ---
-
 def load_config() -> AppConfig:
     try:
         if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r') as f:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 return AppConfig(**data)
     except (json.JSONDecodeError, TypeError):
@@ -139,8 +133,8 @@ def load_config() -> AppConfig:
     return AppConfig(model_name='gemini-1.5-pro', system_prompt='')
 
 def save_config(config: AppConfig):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config.model_dump(), f, indent=2)
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config.model_dump(), f, indent=2, ensure_ascii=False)
 
 @app.get("/api/v1/config", response_model=AppConfig)
 async def get_config():
@@ -148,32 +142,21 @@ async def get_config():
 
 @app.post("/api/v1/config", status_code=status.HTTP_200_OK)
 async def set_config(config: AppConfig):
-    try:
-        save_config(config)
-        return {"status": "success", "message": "Configuration saved."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    save_config(config)
+    return {"status": "success", "message": "Configuration saved."}
 
 @app.get("/api/kb/search")
 async def search_kb(query: str) -> List[Dict[str, str]]:
-    logging.info(f"Received search request with query: '{query}'")
     results = kb_indexer.search(query)
     return results
 
 @app.get("/api/kb/file/{file_id:path}")
 async def get_kb_file(file_id: str) -> StreamingResponse:
-    logging.info(f"Received request for file content: {file_id}")
     content = kb_connector.get_file_content(file_id)
-
     if content is None:
-        logging.error(f"File not found: {file_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-
     file_meta = kb_indexer.get_file_by_id(file_id)
-    media_type = "application/octet-stream"
-    if file_meta:
-        media_type = file_meta.get('mime_type', 'application/octet-stream')
-    
+    media_type = file_meta.get('mime_type', 'application/octet-stream') if file_meta else 'application/octet-stream'
     return StreamingResponse(iter([content]), media_type=media_type)
 
 @app.get("/api/v1/chats", response_model=List[ChatInfo])
@@ -184,13 +167,13 @@ async def list_chats():
         if filename.endswith(".json"):
             conversation_id = filename[:-5]
             title_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
-            title = "Untitled Chat"
+            title = "Новый чат"
             if os.path.exists(title_path):
-                with open(title_path, 'r') as f:
+                with open(title_path, 'r', encoding='utf-8') as f:
                     title = f.read().strip() or title
             else:
                 try:
-                    with open(os.path.join(HISTORY_DIR, filename), 'r') as f:
+                    with open(os.path.join(HISTORY_DIR, filename), 'r', encoding='utf-8') as f:
                         history = json.load(f)
                         if history:
                             first_user_message = next((item for item in history if item.get('role') == 'user'), None)
@@ -209,19 +192,8 @@ async def get_chat_history(conversation_id: str):
         raise HTTPException(status_code=404, detail="Chat history not found.")
     
     try:
-        with open(history_file_path, 'r') as f:
-            history_data = json.load(f)
-        formatted_history = []
-        for item in history_data:
-            message_data = {
-                "role": item.get("role"),
-                "content": item.get("parts", [""])[0]
-            }
-            if 'thinking_steps' in item and item['thinking_steps']:
-                message_data['thinking_steps'] = item['thinking_steps']
-            formatted_history.append(message_data)
-
-        return formatted_history
+        with open(history_file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
     except (json.JSONDecodeError, FileNotFoundError):
         raise HTTPException(status_code=500, detail="Could not read chat history file.")
 
@@ -237,16 +209,15 @@ async def delete_chat(conversation_id: str):
             os.remove(title_file_path)
     except OSError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error deleting chat files: {e}")
-    return
 
 @app.put("/api/v1/chats/{conversation_id}")
 async def rename_chat(conversation_id: str, request: RenameRequest):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-    title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
     if not os.path.exists(history_file_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found, cannot rename.")
+    title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
     try:
-        with open(title_file_path, 'w') as f:
+        with open(title_file_path, 'w', encoding='utf-8') as f:
             f.write(request.new_title)
     except OSError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error writing title file: {e}")
@@ -255,22 +226,21 @@ async def rename_chat(conversation_id: str, request: RenameRequest):
 
 @app.post("/api/v1/chat")
 async def chat(request: ChatRequest) -> Any:
-    response = ChatResponse(reply="Please use the /api/v1/chat/stream endpoint for chat functionality.", error=True)
-    return JSONResponse(status_code=400, content=response.model_dump())
+    return JSONResponse(status_code=400, content={"reply": "Please use the /api/v1/chat/stream endpoint for chat functionality.", "error": True})
 
+# [ИСПРАВЛЕНО] Основное изменение здесь.
+# Мы переделываем event_generator, чтобы он был настоящим асинхронным генератором,
+# который напрямую отдает (`yield`) данные в StreamingResponse.
+# Это устраняет ошибку 'coroutine' object is not iterable.
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
+
     async def event_generator():
-        steps_history: List[Dict[str, str]] = []
+        steps_history: List[Dict[str, Any]] = []
         conversation_id = request.conversation_id
         history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
         os.makedirs(HISTORY_DIR, exist_ok=True)
         final_answer_text = "Произошла ошибка при обработке ответа."
-
-        async def yield_and_store(step_data: Dict[str, str]):
-            steps_history.append(step_data)
-            yield f"data: {json.dumps(step_data)}\n\n"
-            await asyncio.sleep(0.1)
 
         try:
             config = load_config()
@@ -279,59 +249,76 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 system_instruction=config.system_prompt,
                 tools=[get_document_content]
             )
-            chat = model.start_chat(enable_automatic_function_calling=False)
             
             history = []
             if os.path.exists(history_file_path):
-                with open(history_file_path, 'r') as f:
+                with open(history_file_path, 'r', encoding='utf-8') as f:
                     history = json.load(f)
 
+            # Создаем чат и передаем ему историю
+            chat_session = model.start_chat(history=[types.Content(**msg) for msg in history])
+            
             initial_prompt = request.message
             if request.file_id:
                 initial_prompt += f"\n\n[Контекст файла: для анализа файла используй инструмент get_document_content с file_id='{request.file_id}']"
             
-            await yield_and_store({'type': 'thought', 'content': 'Отправляю первоначальный запрос модели...'})
-            response = chat.send_message(initial_prompt)
+            # --- Мыслительный цикл ---
+            step_data = {'type': 'thought', 'content': 'Отправляю запрос модели...'}
+            steps_history.append(step_data)
+            yield f"data: {json.dumps(step_data)}\n\n"
+            
+            response = await chat_session.send_message_async(initial_prompt)
 
             while True:
-                # В новых версиях лучше проверять, что candidate существует
+                # [УЛУЧШЕНИЕ] Проверяем, что в ответе есть `candidates`.
                 if not response.candidates:
-                    final_answer_text = "Модель не вернула кандидатов в ответе."
+                    final_answer_text = "Модель не вернула кандидатов в ответе. Возможно, сработал защитный фильтр."
                     break
 
                 part = response.candidates[0].content.parts[0]
                 
+                # Проверяем, есть ли вызов функции
                 if part.function_call.name:
                     fc = part.function_call
-                    await yield_and_store({'type': 'thought', f'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"})
+                    
+                    step_data = {'type': 'thought', 'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"}
+                    steps_history.append(step_data)
+                    yield f"data: {json.dumps(step_data)}\n\n"
                     
                     if fc.name == 'get_document_content':
                         tool_result = get_document_content(file_id=fc.args['file_id'])
                     else:
                         tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
 
-                    await yield_and_store({'type': 'tool_result', 'content': tool_result})
+                    step_data = {'type': 'tool_result', 'content': tool_result}
+                    steps_history.append(step_data)
+                    yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    # [ИЗМЕНЕНИЕ 2] Используем types.Part и types.FunctionResponse для отправки результата
-                    response = chat.send_message(
-                        content=types.Part(function_response=types.FunctionResponse(
+                    # Отправляем результат работы инструмента обратно модели
+                    response = await chat_session.send_message_async(
+                        types.Part(function_response=types.FunctionResponse(
                             name=fc.name,
                             response={"content": tool_result}
                         ))
                     )
+                # Если вызова функции нет, значит, это финальный текстовый ответ
                 elif part.text:
                     final_answer_text = part.text
                     break
+                # Если нет ни вызова, ни текста, выходим
                 else:
                     final_answer_text = "Модель вернула пустой ответ."
                     break
-
+        
         except Exception as e:
             logger.error(f"Error during agent loop for conversation {conversation_id}: {e}", exc_info=True)
             error_content = f"Критическая ошибка в цикле агента: {str(e)}"
-            await yield_and_store({'type': 'error', 'content': error_content})
+            step_data = {'type': 'error', 'content': error_content}
+            # Отправляем ошибку клиенту, но не сохраняем ее в историю шагов
+            yield f"data: {json.dumps(step_data)}\n\n"
             final_answer_text = "К сожалению, произошла ошибка. Не удалось завершить мыслительный процесс."
         
+        # --- Сохранение истории ---
         user_message = Message(role="user", parts=[request.message])
         model_message = Message(
             role="model",
@@ -339,24 +326,27 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             thinking_steps=[ThinkingStep(**step) for step in steps_history]
         )
         
-        history.append(user_message.model_dump(exclude_none=True))
-        history.append(model_message.model_dump(exclude_none=True))
+        history.append(user_message.model_dump(exclude_none=True, by_alias=True))
+        history.append(model_message.model_dump(exclude_none=True, by_alias=True))
 
-        with open(history_file_path, 'w') as f:
-            json.dump(history, f, indent=2)
+        with open(history_file_path, 'w', encoding='utf-8') as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
         
-        if len(history) == 2:
+        # --- Генерация заголовка для нового чата ---
+        if len(history) == 2: # Если это первое взаимодействие в чате
              try:
                 title_prompt = f"Summarize the following conversation in 5 words or less. Crucially, you must respond in the same language as the conversation. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {final_answer_text}\n\nTitle:"
                 title_model = genai.GenerativeModel('gemini-1.5-flash')
-                title_response = title_model.generate_content(title_prompt)
+                title_response = await title_model.generate_content_async(title_prompt)
                 chat_title = title_response.text.strip().replace('"', '')
                 title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
-                with open(title_file_path, 'w') as f:
+                with open(title_file_path, 'w', encoding='utf-8') as f:
                     f.write(chat_title)
              except Exception as e:
                 logger.warning(f"An error occurred during title generation: {e}")
 
-        await yield_and_store({'type': 'final_answer', 'content': final_answer_text})
+        # --- Отправка финального ответа ---
+        final_data = {'type': 'final_answer', 'content': final_answer_text}
+        yield f"data: {json.dumps(final_data)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
