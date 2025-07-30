@@ -12,8 +12,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
 from kb_service.indexer import KnowledgeBaseIndexer
+from kb_service.parser import parse_document
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -69,6 +71,7 @@ class AppConfig(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_id: str
+    file_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     reply: str
@@ -121,7 +124,7 @@ async def get_kb_file(file_id: str) -> StreamingResponse:
         logging.error(f"File not found: {file_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
-    file_meta = next((item for item in kb_indexer.index if item["id"] == file_id), None)
+    file_meta = kb_indexer.get_file_by_id(file_id)
     media_type = "application/octet-stream"
     if file_meta:
         media_type = file_meta.get('mime_type', 'application/octet-stream')
@@ -216,13 +219,37 @@ async def chat(request: ChatRequest):
                 history = json.load(f)
             except json.JSONDecodeError:
                 history = []
+
+    final_message = request.message
+    file_id = request.file_id
+    
+    if file_id:
+        try:
+            logger.info(f"RAG request received for file_id: {file_id}")
+            file_info = kb_indexer.get_file_by_id(file_id)
+            if not file_info:
+                raise HTTPException(status_code=404, detail=f"File with id {file_id} not found in index.")
+            
+            file_content = kb_connector.get_file_content(file_id)
+            if not file_content:
+                raise HTTPException(status_code=404, detail=f"Content for file id {file_id} could not be retrieved.")
+            
+            document_text = parse_document(file_info['name'], file_content, file_info['mime_type'])
+            
+            final_message = f"Context from file '{file_info['name']}':\n\n{document_text}\n\nUser query: {request.message}"
+            logger.info("Successfully pre-pended document context to user message.")
+        
+        except Exception as e:
+            logger.error(f"Error processing RAG request for file_id {file_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to process document for RAG.")
+
     try:
         model = genai.GenerativeModel(
             model_name=config.model_name,
             system_instruction=config.system_prompt if config.system_prompt.strip() else None
         )
         chat_session = model.start_chat(history=history)
-        response = await chat_session.send_message_async(request.message)
+        response = await chat_session.send_message_async(final_message)
         
         history.append({"role": "user", "parts": [request.message]})
         history.append({"role": "model", "parts": [response.text]})
@@ -245,5 +272,5 @@ async def chat(request: ChatRequest):
         return ChatResponse(reply=response.text)
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.error(f"An error occurred with the AI service: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An error occurred with the AI service.")
