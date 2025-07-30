@@ -261,7 +261,9 @@ function App() {
     const tempModelMessage: Message = { id: tempModelMessageId, role: 'model', content: '' };
     setMessages(prev => [...prev, userMessage, tempModelMessage]);
     setStreamingMessageId(tempModelMessageId);
-    setThinkingSteps([]);
+    
+    const liveThinkingSteps: ThinkingStep[] = [];
+    setThinkingSteps(liveThinkingSteps);
 
     try {
         const response = await fetch(`${API_BASE_URL}/v1/chat/stream`, {
@@ -293,15 +295,23 @@ function App() {
                         const data = JSON.parse(jsonString);
                         
                         if (data.type === 'final_answer') {
-                            setMessages(prev => prev.map(msg =>
-                                msg.id === tempModelMessageId ? { ...msg, content: data.content, thinking_steps: thinkingSteps || [] } : msg
-                            ));
+                            setMessages(currentMessages => 
+                                currentMessages.map(m => 
+                                    m.id === tempModelMessageId 
+                                    ? { ...m, content: data.content, thinking_steps: liveThinkingSteps } 
+                                    : m
+                                )
+                            );
+                            setThinkingSteps(null);
+                            setStreamingMessageId(null);
+
                             if (isNewChat) {
                                 setCurrentChatId(conversationId);
                                 await loadChats();
                             }
                         } else {
-                            setThinkingSteps(prev => [...(prev || []), data]);
+                            liveThinkingSteps.push(data);
+                            setThinkingSteps([...liveThinkingSteps]);
                         }
                     } catch (e) {
                         console.error("Error parsing streaming JSON:", e, "JSON string:", jsonString);
@@ -316,8 +326,9 @@ function App() {
         ));
     } finally {
         setIsLoading(false);
-        setStreamingMessageId(null);
-        setThinkingSteps(null);
+        // Resets are now handled inside the loop to prevent flickering
+        if(streamingMessageId) setStreamingMessageId(null);
+        if(thinkingSteps) setThinkingSteps(null);
     }
   };
 
@@ -417,9 +428,9 @@ function App() {
                 messages.map(msg => (
                     <div key={msg.id} className={`message-block ${msg.role}`}>
                         <div className="message-content">
-                            {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} />}
+                            {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} defaultCollapsed={true} />}
                             <p>{msg.content}</p>
-                            {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} />}
+                            {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} defaultCollapsed={false} />}
                         </div>
                     </div>
                 ))
