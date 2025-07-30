@@ -13,7 +13,8 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-from google.generativeai.types import Part, FunctionResponse
+# [ИЗМЕНЕНИЕ 1] Исправляем импорт. Теперь импортируем весь модуль types.
+from google.generativeai import types
 
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
@@ -293,6 +294,11 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             response = chat.send_message(initial_prompt)
 
             while True:
+                # В новых версиях лучше проверять, что candidate существует
+                if not response.candidates:
+                    final_answer_text = "Модель не вернула кандидатов в ответе."
+                    break
+
                 part = response.candidates[0].content.parts[0]
                 
                 if part.function_call.name:
@@ -306,8 +312,12 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
                     await yield_and_store({'type': 'tool_result', 'content': tool_result})
                     
+                    # [ИЗМЕНЕНИЕ 2] Используем types.Part и types.FunctionResponse для отправки результата
                     response = chat.send_message(
-                        Part(function_response=FunctionResponse(name=fc.name, response={"content": tool_result}))
+                        content=types.Part(function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response={"content": tool_result}
+                        ))
                     )
                 elif part.text:
                     final_answer_text = part.text
