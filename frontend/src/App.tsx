@@ -21,6 +21,7 @@ interface Message {
   id: string;
   role: 'user' | 'model' | 'error';
   content: string;
+  displayedContent: string;
   thinking_steps?: ThinkingStep[];
 }
 
@@ -61,6 +62,7 @@ function App() {
 
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[] | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [isFinalizing, setIsFinalizing] = useState<string | null>(null);
 
   const [modalState, setModalState] = useState<ModalState>({
     visible: false,
@@ -171,12 +173,13 @@ function App() {
           id: uuidv4(),
           role: m.role,
           content: m.content,
+          displayedContent: m.content, // For historical messages, display immediately
           thinking_steps: m.thinking_steps
       }));
       setMessages(formattedMessages);
     } catch(error) {
       console.error("Failed to select chat:", error);
-      setMessages([{ id: uuidv4(), role: 'error', content: 'Could not load this chat.' }]);
+      setMessages([{ id: uuidv4(), role: 'error', content: 'Could not load this chat.', displayedContent: 'Could not load this chat.' }]);
     } finally {
       setIsLoading(false);
     }
@@ -253,12 +256,12 @@ function App() {
     setIsLoading(true);
     setUserInput('');
 
-    const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText };
+    const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText, displayedContent: messageText };
     const isNewChat = currentChatId === null;
     const conversationId = currentChatId || uuidv4();
     
     const tempModelMessageId = uuidv4();
-    const tempModelMessage: Message = { id: tempModelMessageId, role: 'model', content: '' };
+    const tempModelMessage: Message = { id: tempModelMessageId, role: 'model', content: '', displayedContent: '' };
     setMessages(prev => [...prev, userMessage, tempModelMessage]);
     setStreamingMessageId(tempModelMessageId);
     
@@ -295,6 +298,7 @@ function App() {
                         const data = JSON.parse(jsonString);
                         
                         if (data.type === 'final_answer') {
+                            setIsFinalizing(tempModelMessageId);
                             setMessages(currentMessages => 
                                 currentMessages.map(m => 
                                     m.id === tempModelMessageId 
@@ -302,8 +306,12 @@ function App() {
                                     : m
                                 )
                             );
-                            setThinkingSteps(null);
-                            setStreamingMessageId(null);
+                            
+                            setTimeout(() => {
+                                setThinkingSteps(null);
+                                setStreamingMessageId(null);
+                                setIsFinalizing(null);
+                            }, 500); // Must match CSS animation duration
 
                             if (isNewChat) {
                                 setCurrentChatId(conversationId);
@@ -322,15 +330,38 @@ function App() {
     } catch (error) {
         console.error("Streaming chat failed:", error);
         setMessages(prev => prev.map(msg =>
-            msg.id === tempModelMessageId ? { ...msg, role: 'error', content: 'Ошибка потоковой передачи ответа.' } : msg
+            msg.id === tempModelMessageId ? { ...msg, role: 'error', content: 'Ошибка потоковой передачи ответа.', displayedContent: 'Ошибка потоковой передачи ответа.' } : msg
         ));
     } finally {
         setIsLoading(false);
-        // Resets are now handled inside the loop to prevent flickering
-        if(streamingMessageId) setStreamingMessageId(null);
-        if(thinkingSteps) setThinkingSteps(null);
     }
   };
+
+  useEffect(() => {
+    const messageToType = messages.find(
+      (m) => m.role === 'model' && m.content.length > m.displayedContent.length
+    );
+
+    if (messageToType) {
+      const interval = setInterval(() => {
+        setMessages((currentMessages) =>
+          currentMessages.map((m) => {
+            if (m.id === messageToType.id) {
+              const nextCharIndex = m.displayedContent.length;
+              return {
+                ...m,
+                displayedContent: m.content.substring(0, nextCharIndex + 1),
+              };
+            }
+            return m;
+          })
+        );
+      }, 20); // Typewriter speed
+
+      return () => clearInterval(interval);
+    }
+  }, [messages]);
+
 
   const adjustTextareaHeight = () => {
     if (userInputRef.current) {
@@ -358,7 +389,7 @@ function App() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, thinkingSteps]);
+  }, [messages, thinkingSteps, isFinalizing]);
 
   useEffect(() => {
     adjustTextareaHeight();
@@ -426,11 +457,11 @@ function App() {
                 </div>
             ) : (
                 messages.map(msg => (
-                    <div key={msg.id} className={`message-block ${msg.role}`}>
+                    <div key={msg.id} className={`message-block ${msg.role} ${msg.content === msg.displayedContent ? 'done' : ''}`}>
                         <div className="message-content">
                             {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} defaultCollapsed={true} />}
-                            <p>{msg.content}</p>
-                            {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} defaultCollapsed={false} />}
+                            <p className="content">{msg.displayedContent}</p>
+                            {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} defaultCollapsed={false} isFinalizing={isFinalizing === msg.id} />}
                         </div>
                     </div>
                 ))
