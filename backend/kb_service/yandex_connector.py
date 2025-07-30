@@ -3,7 +3,7 @@ import io
 from typing import List, Dict, Optional
 
 import yadisk
-from yadisk import yadisk
+from yadisk.exceptions import AuthError, PathNotFoundError
 
 from .connector import KnowledgeBaseConnector
 
@@ -24,7 +24,7 @@ class YandexDiskConnector(KnowledgeBaseConnector):
             logger.critical("Yandex.Disk API token is invalid or has expired.")
             raise ValueError("Invalid Yandex.Disk API token.")
 
-    def _scan_path_recursive(self, path: str) -> List[Dict[str, str]]:
+    def list_files_recursive(self, path: str) -> List[Dict[str, str]]:
         files_metadata: List[Dict[str, str]] = []
         try:
             logger.info(f"Scanning Yandex.Disk path: {path}")
@@ -36,7 +36,7 @@ class YandexDiskConnector(KnowledgeBaseConnector):
                 if not item_path:
                     continue
                 if item_type == 'dir':
-                    files_metadata.extend(self._scan_path_recursive(item_path))
+                    files_metadata.extend(self.list_files_recursive(item_path))
                 elif item_type == 'file':
                     file_meta = {
                         "id": item_path,
@@ -51,10 +51,6 @@ class YandexDiskConnector(KnowledgeBaseConnector):
         except Exception as e:
             logger.error(f"An unexpected error occurred while scanning Yandex.Disk path {path}: {e}", exc_info=True)
         return files_metadata
-
-    def list_files_recursive(self) -> List[Dict[str, str]]:
-        logger.info("Starting recursive file scan from Yandex.Disk root.")
-        return self._scan_path_recursive("/")
 
     def get_file_content(self, file_id: str) -> Optional[bytes]:
         logger.info(f"Requesting content for file from Yandex.Disk: {file_id}")
