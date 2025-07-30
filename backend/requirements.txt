@@ -9,3 +9,4 @@ yadisk
 pypdf
 python-docx
 openpyxl
+rarfile
