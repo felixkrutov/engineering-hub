@@ -3,7 +3,7 @@ import io
 from typing import List, Dict, Optional
 
 import yadisk
-from yadisk.exceptions import AuthError, PathNotFoundError
+from yadisk.exceptions import UnauthorizedError, NotFoundError
 
 from .connector import KnowledgeBaseConnector
 
@@ -20,7 +20,7 @@ class YandexDiskConnector(KnowledgeBaseConnector):
             logger.info("Verifying Yandex.Disk API token...")
             self.client.get_disk_info()
             logger.info("YandexDiskConnector initialized and token verified successfully.")
-        except AuthError:
+        except UnauthorizedError:
             logger.critical("Yandex.Disk API token is invalid or has expired.")
             raise ValueError("Invalid Yandex.Disk API token.")
 
@@ -45,16 +45,15 @@ class YandexDiskConnector(KnowledgeBaseConnector):
                         "mime_type": item.get('mime_type', 'application/octet-stream'),
                     }
                     files_metadata.append(file_meta)
-        except PathNotFoundError:
+        except NotFoundError:
             logger.warning(f"Path not found on Yandex.Disk: {path}")
             return []
         except Exception as e:
             logger.error(f"An unexpected error occurred while scanning Yandex.Disk path {path}: {e}", exc_info=True)
         return files_metadata
 
-    def list_files_recursive(self) -> List[Dict[str, str]]:
-        logger.info("Starting recursive file scan from Yandex.Disk root.")
-        return self._scan_path_recursive("/")
+    def list_files_recursive(self, path: str) -> List[Dict[str, str]]:
+        return self._scan_path_recursive(path)
 
     def get_file_content(self, file_id: str) -> Optional[bytes]:
         logger.info(f"Requesting content for file from Yandex.Disk: {file_id}")
@@ -64,7 +63,7 @@ class YandexDiskConnector(KnowledgeBaseConnector):
             content = buffer.getvalue()
             logger.info(f"Successfully downloaded {len(content)} bytes for file: {file_id}")
             return content
-        except PathNotFoundError:
+        except NotFoundError:
             logger.warning(f"File not found on Yandex.Disk: {file_id}")
             return None
         except Exception as e:
