@@ -187,17 +187,12 @@ async def get_chat_history(conversation_id: str):
         with open(history_file_path, 'r', encoding='utf-8') as f:
             history_data = json.load(f)
 
-        # [ИСПРАВЛЕНО] Преобразуем данные в формат, который ожидает фронтенд.
-        # Это решает проблему "белого экрана" при открытии старых чатов.
-        # Мы создаем поле 'content' из первого элемента списка 'parts'.
         formatted_history = []
         for item in history_data:
             message_data = {
                 "role": item.get("role"),
-                # Безопасно получаем первый элемент из 'parts' или пустую строку, если его нет
                 "content": item.get("parts", [""])[0] 
             }
-            # Если у сообщения есть "шаги размышления", добавляем их тоже.
             if 'thinking_steps' in item and item['thinking_steps']:
                 message_data['thinking_steps'] = item['thinking_steps']
             formatted_history.append(message_data)
@@ -263,7 +258,9 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             
             model = genai.GenerativeModel(**model_kwargs)
             
-            chat_session = model.start_chat(history=[types.Content(**msg) for msg in history])
+            # [ИСПРАВЛЕНО] Убираем ошибочный вызов types.Content.
+            # Метод start_chat принимает список словарей напрямую.
+            chat_session = model.start_chat(history=history)
             
             initial_prompt = request.message
             if request.file_id:
