@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-# [ИСПРАВЛЕНО] Возвращаемся к безопасному импорту всего модуля
 from google.generativeai import types
 
 from kb_service.connector import MockConnector
@@ -49,7 +48,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 def get_document_content(file_id: str) -> str:
     logger.info(f"TOOL CALL: get_document_content for file_id: {file_id}")
     try:
-        # Убедитесь, что этот метод добавлен в ваш indexer.py!
         file_info = kb_indexer.get_file_by_id(file_id)
         if not file_info:
             return f"ОШИБКА: Файл с id '{file_id}' не найден в базе знаний."
@@ -250,7 +248,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
         try:
             config = load_config()
-
             model_kwargs = {
                 'model_name': config.model_name,
                 'tools': [get_document_content]
@@ -286,7 +283,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 
                 if part.function_call.name:
                     fc = part.function_call
-                    
                     step_data = {'type': 'thought', 'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"}
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
@@ -297,7 +293,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    # [ИСПРАВЛЕНО] Возвращаем префиксы types., так как импортируем весь модуль.
                     response = await chat_session.send_message_async(
                         types.Part(function_response=types.FunctionResponse(
                             name=fc.name,
