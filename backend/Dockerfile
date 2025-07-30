@@ -2,8 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Устанавливаем BASH и другие зависимости
-RUN sed -i 's/main/main contrib non-free/g' /etc/apt/sources.list.d/debian.sources
+# Enable non-free repository to install unrar
+RUN mv /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/debian.sources.bak
+RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free" > /etc/apt/sources.list
+
+# Install dependencies
 RUN apt-get update && apt-get install -y bash netcat-openbsd libmagic1 unrar && rm -rf /var/lib/apt/lists/*
 
 COPY ./requirements.txt .
