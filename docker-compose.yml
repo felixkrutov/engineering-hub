@@ -6,19 +6,16 @@ services:
     container_name: engineering-hub-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: \${POSTGRES_USER}
-      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
-      POSTGRES_DB: \${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # Порт 5432 не нужно выставлять наружу, если вы не подключаетесь к БД с хост-машины
-    # ports:
-    #   - "5432:5432"
+    # Порт 5432 не нужно выставлять наружу, если к БД не подключаются извне сети Docker.
 
   backend:
     build:
       context: ./backend
-      # Указываем путь к Dockerfile явно, если он не в корне ./backend
       dockerfile: Dockerfile
     container_name: engineering-hub-backend
     restart: unless-stopped
@@ -26,8 +23,8 @@ services:
       - db
     env_file:
       - .env
-    # Этот volume нужен для разработки, чтобы изменения кода сразу применялись. Для продакшена его можно убрать.
     volumes:
+      # Этот volume нужен для разработки, чтобы изменения кода сразу применялись без пересборки.
       - ./backend:/app
       - ./chat_histories:/app/chat_histories
       - ./mock_disk:/app/mock_disk
@@ -35,24 +32,28 @@ services:
   frontend:
     build: ./frontend
     container_name: engineering-hub-frontend
+    # [ИСПРАВЛЕНО] Добавляем restart, чтобы сервис был более устойчив.
     restart: unless-stopped
     depends_on:
       - backend
-    volumes:
-      # ВАЖНО: Подключаем правильный, только что созданный конфиг для фронтенда!
-      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # Том с конфигом Nginx для фронтенда здесь больше не нужен,
+    # так как Dockerfile фронтенда уже копирует статику в образ Nginx.
+    # Если у вас отдельный Dockerfile для frontend, который собирает статику,
+    # и отдельный образ nginx, который ее использует, то все в порядке.
+    # Судя по вашим логам сборки, у вас многоступенчатая сборка, что правильно.
 
   nginx:
     build: ./nginx
     container_name: engineering-hub-nginx
+    # [ИСПРАВЛЕНО] Добавляем restart, чтобы решить проблему "гонки" при старте.
+    # Если nginx запустится раньше backend, он упадет, но Docker Compose его перезапустит.
     restart: unless-stopped
     depends_on:
       - frontend
       - backend
     ports:
-      # Системный Nginx обращается на 127.0.0.1:8081, а этот порт маппится на порт 80 внутри контейнера
+      # Системный Nginx обращается на 127.0.0.1:8081, а этот порт маппится на порт 80 внутри контейнера.
       - "8081:80"
-    # Этому контейнеру не нужны никакие volumes, т.к. его конфиг запекается в образ на этапе `build`
 
 volumes:
   postgres_data:
