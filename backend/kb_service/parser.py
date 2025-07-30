@@ -7,6 +7,17 @@ from openpyxl import load_workbook
 logger = logging.getLogger(__name__)
 
 def extract_text_from_file(file_content: bytes, mime_type: str) -> str:
+    supported_mime_types = [
+        'text/plain',
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ]
+
+    if not mime_type.startswith('text/') and mime_type not in supported_mime_types:
+        logger.warning(f"Unsupported file type for parsing: '{mime_type}'. Skipping.")
+        return f"НЕПОДДЕРЖИВАЕМЫЙ ТИП ФАЙЛА: {mime_type}"
+
     logger.info(f"Attempting to extract text from file with MIME type: {mime_type}")
     try:
         if mime_type == "application/pdf":
@@ -39,11 +50,9 @@ def extract_text_from_file(file_content: bytes, mime_type: str) -> str:
             text = file_content.decode('utf-8')
             logger.info(f"Successfully decoded text file with {len(text)} characters.")
             return text
-
-        else:
-            logger.warning(f"Unsupported MIME type for text extraction: {mime_type}")
-            return f"[Unsupported file format: {mime_type}]"
-
+            
     except Exception as e:
         logger.error(f"Failed to extract text from file with MIME type {mime_type}. Error: {e}", exc_info=True)
         return f"[Error processing file: {e}]"
+    
+    return ""
