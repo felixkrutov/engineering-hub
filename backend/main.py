@@ -2,6 +2,7 @@ import logging
 import os
 import json
 import uuid
+import asyncio
 from datetime import datetime
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -294,3 +295,28 @@ async def chat(request: ChatRequest) -> Any:
                 "error": True
             }
         )
+
+@app.post("/api/v1/chat/stream")
+async def stream_chat(request: ChatRequest) -> StreamingResponse:
+    async def event_generator():
+        # Step 1: Acknowledge and think
+        yield f"data: {json.dumps({'type': 'thought', 'content': 'Задача получена. Начинаю анализ.'})}\n\n"
+        await asyncio.sleep(1)
+
+        # Step 2: Simulate a tool call
+        yield f"data: {json.dumps({'type': 'tool_call', 'content': 'Использую инструмент: search_knowledge_base(query=...)'})}\n\n"
+        await asyncio.sleep(1.5)
+
+        # Step 3: Simulate a tool result (error)
+        yield f"data: {json.dumps({'type': 'tool_result', 'content': 'Ошибка: Файл слишком большой. Лимит токенов превышен.'})}\n\n"
+        await asyncio.sleep(1)
+
+        # Step 4: Final thought before answering
+        yield f"data: {json.dumps({'type': 'thought', 'content': 'Не удалось обработать файл. Формулирую ответ для пользователя.'})}\n\n"
+        await asyncio.sleep(0.5)
+
+        # Step 5: The final answer (we can call the actual AI here later)
+        final_answer_text = "К сожалению, я не могу напрямую проанализировать этот файл, так как он слишком большой."
+        yield f"data: {json.dumps({'type': 'final_answer', 'content': final_answer_text})}\n\n"
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
