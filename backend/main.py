@@ -1,5 +1,3 @@
-# backend/main.py
-
 import logging
 import os
 import json
@@ -15,7 +13,6 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-# [УЛУЧШЕНИЕ] Импортируем весь модуль types для явного и стабильного доступа к типам, таким как Part и FunctionResponse.
 from google.generativeai import types
 
 from kb_service.connector import MockConnector
@@ -75,7 +72,7 @@ def update_kb_index() -> None:
 def startup_event():
     logging.info("Application startup: Initializing services...")
     update_kb_index()
-    scheduler.add_job(update_kb_index, "interval", hours=1, id="update_kb_index_job")
+    scheduler.add_job(update_kb_index, "interval", hours=1, id="update_kb_index_job", replace_existing=True)
     scheduler.start()
     logging.info("Application startup: Services initialized and scheduler started.")
 
@@ -99,10 +96,6 @@ class ChatRequest(BaseModel):
     message: str
     conversation_id: str
     file_id: Optional[str] = None
-
-class ChatResponse(BaseModel):
-    reply: str
-    error: bool = False
 
 class ChatInfo(BaseModel):
     id: str
@@ -147,8 +140,7 @@ async def set_config(config: AppConfig):
 
 @app.get("/api/kb/search")
 async def search_kb(query: str) -> List[Dict[str, str]]:
-    results = kb_indexer.search(query)
-    return results
+    return kb_indexer.search(query)
 
 @app.get("/api/kb/file/{file_id:path}")
 async def get_kb_file(file_id: str) -> StreamingResponse:
@@ -182,7 +174,7 @@ async def list_chats():
                 except (json.JSONDecodeError, IndexError):
                     pass
             chats.append(ChatInfo(id=conversation_id, title=title))
-    return sorted(chats, key=lambda x: x.id, reverse=True)
+    return sorted(chats, key=lambda item: os.path.getmtime(os.path.join(HISTORY_DIR, f"{item.id}.json")), reverse=True)
 
 
 @app.get("/api/v1/chats/{conversation_id}")
@@ -228,13 +220,8 @@ async def rename_chat(conversation_id: str, request: RenameRequest):
 async def chat(request: ChatRequest) -> Any:
     return JSONResponse(status_code=400, content={"reply": "Please use the /api/v1/chat/stream endpoint for chat functionality.", "error": True})
 
-# [ИСПРАВЛЕНО] Основное изменение здесь.
-# Мы переделываем event_generator, чтобы он был настоящим асинхронным генератором,
-# который напрямую отдает (`yield`) данные в StreamingResponse.
-# Это устраняет ошибку 'coroutine' object is not iterable.
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
-
     async def event_generator():
         steps_history: List[Dict[str, Any]] = []
         conversation_id = request.conversation_id
@@ -242,20 +229,27 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         os.makedirs(HISTORY_DIR, exist_ok=True)
         final_answer_text = "Произошла ошибка при обработке ответа."
 
+        # Инициализируем history здесь, чтобы она была доступна всегда, даже если try/except сработает
+        history = []
+        if os.path.exists(history_file_path):
+            with open(history_file_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+
         try:
             config = load_config()
-            model = genai.GenerativeModel(
-                model_name=config.model_name,
-                system_instruction=config.system_prompt,
-                tools=[get_document_content]
-            )
-            
-            history = []
-            if os.path.exists(history_file_path):
-                with open(history_file_path, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
 
-            # Создаем чат и передаем ему историю
+            # Условное создание модели: передаем system_instruction, только если промпт не пустой.
+            # Это решает ошибку "content' argument must not be empty".
+            model_kwargs = {
+                'model_name': config.model_name,
+                'tools': [get_document_content]
+            }
+            if config.system_prompt and config.system_prompt.strip():
+                model_kwargs['system_instruction'] = config.system_prompt
+            
+            model = genai.GenerativeModel(**model_kwargs)
+            
+            # Создаем сессию чата и передаем ему историю
             chat_session = model.start_chat(history=[types.Content(**msg) for msg in history])
             
             initial_prompt = request.message
@@ -270,14 +264,12 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             response = await chat_session.send_message_async(initial_prompt)
 
             while True:
-                # [УЛУЧШЕНИЕ] Проверяем, что в ответе есть `candidates`.
                 if not response.candidates:
                     final_answer_text = "Модель не вернула кандидатов в ответе. Возможно, сработал защитный фильтр."
                     break
 
                 part = response.candidates[0].content.parts[0]
                 
-                # Проверяем, есть ли вызов функции
                 if part.function_call.name:
                     fc = part.function_call
                     
@@ -285,27 +277,21 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    if fc.name == 'get_document_content':
-                        tool_result = get_document_content(file_id=fc.args['file_id'])
-                    else:
-                        tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
+                    tool_result = get_document_content(file_id=fc.args['file_id']) if fc.name == 'get_document_content' else f"Ошибка: Неизвестный инструмент '{fc.name}'."
 
                     step_data = {'type': 'tool_result', 'content': tool_result}
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    # Отправляем результат работы инструмента обратно модели
                     response = await chat_session.send_message_async(
                         types.Part(function_response=types.FunctionResponse(
                             name=fc.name,
                             response={"content": tool_result}
                         ))
                     )
-                # Если вызова функции нет, значит, это финальный текстовый ответ
                 elif part.text:
                     final_answer_text = part.text
                     break
-                # Если нет ни вызова, ни текста, выходим
                 else:
                     final_answer_text = "Модель вернула пустой ответ."
                     break
@@ -313,9 +299,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         except Exception as e:
             logger.error(f"Error during agent loop for conversation {conversation_id}: {e}", exc_info=True)
             error_content = f"Критическая ошибка в цикле агента: {str(e)}"
-            step_data = {'type': 'error', 'content': error_content}
-            # Отправляем ошибку клиенту, но не сохраняем ее в историю шагов
-            yield f"data: {json.dumps(step_data)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': error_content})}\n\n"
             final_answer_text = "К сожалению, произошла ошибка. Не удалось завершить мыслительный процесс."
         
         # --- Сохранение истории ---
@@ -326,16 +310,16 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             thinking_steps=[ThinkingStep(**step) for step in steps_history]
         )
         
-        history.append(user_message.model_dump(exclude_none=True, by_alias=True))
-        history.append(model_message.model_dump(exclude_none=True, by_alias=True))
+        history.append(user_message.model_dump(exclude_none=True))
+        history.append(model_message.model_dump(exclude_none=True))
 
         with open(history_file_path, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
         
-        # --- Генерация заголовка для нового чата ---
-        if len(history) == 2: # Если это первое взаимодействие в чате
+        # --- Генерация заголовка (только для новых чатов) ---
+        if len(history) == 2:
              try:
-                title_prompt = f"Summarize the following conversation in 5 words or less. Crucially, you must respond in the same language as the conversation. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {final_answer_text}\n\nTitle:"
+                title_prompt = f"Summarize the following conversation in 5 words or less in Russian. User: {request.message}\nAI: {final_answer_text}\n\nTitle:"
                 title_model = genai.GenerativeModel('gemini-1.5-flash')
                 title_response = await title_model.generate_content_async(title_prompt)
                 chat_title = title_response.text.strip().replace('"', '')
