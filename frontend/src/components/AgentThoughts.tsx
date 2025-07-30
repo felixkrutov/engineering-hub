@@ -8,9 +8,10 @@ interface Step {
 interface AgentThoughtsProps {
   steps: Step[] | null;
   defaultCollapsed: boolean;
+  isFinalizing?: boolean;
 }
 
-const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed }) => {
+const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed, isFinalizing }) => {
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -35,7 +36,7 @@ const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed }
   };
 
   return (
-    <div className="agent-thoughts-container">
+    <div className={`agent-thoughts-container ${isFinalizing ? 'collapsing' : ''}`}>
       <div className="agent-thoughts-header" onClick={() => setIsCollapsed(!isCollapsed)}>
         <h5>Мыслительный процесс</h5>
         <button>{isCollapsed ? 'Развернуть' : 'Свернуть'}</button>
