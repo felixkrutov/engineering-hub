@@ -13,7 +13,8 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-from google.generativeai import types
+# [ИСПРАВЛЕНО] Изменяем импорт на более явный
+from google.generativeai.types import Part, FunctionResponse
 
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
@@ -48,6 +49,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 def get_document_content(file_id: str) -> str:
     logger.info(f"TOOL CALL: get_document_content for file_id: {file_id}")
     try:
+        # Эта строка теперь будет работать, после того как вы добавите метод в indexer.py
         file_info = kb_indexer.get_file_by_id(file_id)
         if not file_info:
             return f"ОШИБКА: Файл с id '{file_id}' не найден в базе знаний."
@@ -258,7 +260,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             
             model = genai.GenerativeModel(**model_kwargs)
             
-            # [ИСПРАВЛЕНО] Очищаем историю от кастомных полей (thinking_steps) перед отправкой в модель.
             cleaned_history = [
                 {"role": msg["role"], "parts": msg["parts"]}
                 for msg in history
@@ -296,8 +297,9 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
+                    # [ИСПРАВЛЕНО] Убираем префикс types.
                     response = await chat_session.send_message_async(
-                        types.Part(function_response=types.FunctionResponse(
+                        Part(function_response=FunctionResponse(
                             name=fc.name,
                             response={"content": tool_result}
                         ))
