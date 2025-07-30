@@ -1,14 +1,18 @@
 import logging
 import os
 import json
+import uuid
+from datetime import datetime
 import google.generativeai as genai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
+from google.api_core.exceptions import ResourceExhausted
+
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
 from kb_service.indexer import KnowledgeBaseIndexer
@@ -75,6 +79,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+    error: bool = False
 
 class ChatInfo(BaseModel):
     id: str
@@ -204,8 +209,8 @@ async def rename_chat(conversation_id: str, request: RenameRequest):
     return {"status": "success", "message": "Chat renamed"}
 
 
-@app.post("/api/v1/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@app.post("/api/v1/chat")
+async def chat(request: ChatRequest) -> Any:
     config = load_config()
     conversation_id = request.conversation_id
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
@@ -267,10 +272,25 @@ async def chat(request: ChatRequest):
                 with open(title_file_path, 'w') as f:
                     f.write(chat_title)
             except Exception as e:
-                print(f"An error occurred during title generation: {e}")
+                logger.warning(f"An error occurred during title generation: {e}")
         
         return ChatResponse(reply=response.text)
 
+    except ResourceExhausted as e:
+        logger.error(f"Google API quota exceeded: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "reply": "Не удалось обработать запрос: исчерпан лимит запросов к API. Пожалуйста, попробуйте позже или проверьте ваш план и биллинг.",
+                "error": True
+            }
+        )
     except Exception as e:
-        logger.error(f"An error occurred with the AI service: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="An error occurred with the AI service.")
+        logger.error(f"An unexpected error occurred in chat endpoint: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "reply": "Произошла непредвиденная ошибка на сервере. Пожалуйста, попробуйте еще раз.",
+                "error": True
+            }
+        )
