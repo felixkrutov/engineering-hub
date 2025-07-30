@@ -29,10 +29,10 @@ class YandexDiskConnector(KnowledgeBaseConnector):
         try:
             logger.info(f"Scanning Yandex.Disk path: {path}")
             resource = self.client.get_meta(path, limit=1000)
-            items = resource.get('_embedded', {}).get('items', [])
+            items = resource._embedded.items
             for item in items:
-                item_type = item.get('type')
-                item_path = item.get('path')
+                item_type = item.type
+                item_path = item.path
                 if not item_path:
                     continue
                 if item_type == 'dir':
@@ -40,9 +40,9 @@ class YandexDiskConnector(KnowledgeBaseConnector):
                 elif item_type == 'file':
                     file_meta = {
                         "id": item_path,
-                        "name": item.get('name', ''),
+                        "name": item.name,
                         "path": item_path,
-                        "mime_type": item.get('mime_type', 'application/octet-stream'),
+                        "mime_type": item.mime_type,
                     }
                     files_metadata.append(file_meta)
         except NotFoundError:
