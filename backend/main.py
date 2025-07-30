@@ -301,10 +301,10 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
     async def event_generator():
         # Step 1: Acknowledge and think
         yield f"data: {json.dumps({'type': 'thought', 'content': 'Задача получена. Начинаю анализ.'})}\n\n"
-        await asyncio.sleep(1)
+        await asyncio.sleep(1) # Simulate work
 
         # Step 2: Simulate a tool call
-        yield f"data: {json.dumps({'type': 'tool_call', 'content': 'Использую инструмент: search_knowledge_base(query=...)'})}\n\n"
+        yield f"data: {json.dumps({'type': 'tool_call', 'content': 'Использую инструмент: get_file_content'})}\n\n"
         await asyncio.sleep(1.5)
 
         # Step 3: Simulate a tool result (error)
@@ -315,7 +315,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         yield f"data: {json.dumps({'type': 'thought', 'content': 'Не удалось обработать файл. Формулирую ответ для пользователя.'})}\n\n"
         await asyncio.sleep(0.5)
 
-        # Step 5: The final answer (we can call the actual AI here later)
+        # Step 5: The final answer
         final_answer_text = "К сожалению, я не могу напрямую проанализировать этот файл, так как он слишком большой."
         yield f"data: {json.dumps({'type': 'final_answer', 'content': final_answer_text})}\n\n"
     
