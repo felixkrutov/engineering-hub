@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
 import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, FaCog } from 'react-icons/fa';
 import { v4 as uuidv4 } from 'uuid';
+import AgentThoughts from './components/AgentThoughts';
 import './App.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/hub/api';
@@ -11,10 +12,16 @@ interface Chat {
   title: string;
 }
 
+interface ThinkingStep {
+  type: string;
+  content: string;
+}
+
 interface Message {
   id: string;
   role: 'user' | 'model' | 'error';
   content: string;
+  thinking_steps?: ThinkingStep[];
 }
 
 interface ModalState {
@@ -52,7 +59,7 @@ function App() {
   const [isKbSearching, setIsKbSearching] = useState(false);
   const [kbError, setKbError] = useState<string | null>(null);
 
-  const [thinkingSteps, setThinkingSteps] = useState<string[] | null>(null);
+  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[] | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
 
   const [modalState, setModalState] = useState<ModalState>({
@@ -159,8 +166,14 @@ function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
       if (!response.ok) throw new Error("Chat history not found");
-      const data: Message[] = (await response.json()).map((m: any) => ({...m, id: uuidv4()}));
-      setMessages(data);
+      const rawMessages: any[] = await response.json();
+      const formattedMessages: Message[] = rawMessages.map(m => ({
+          id: uuidv4(),
+          role: m.role,
+          content: m.content,
+          thinking_steps: m.thinking_steps
+      }));
+      setMessages(formattedMessages);
     } catch(error) {
       console.error("Failed to select chat:", error);
       setMessages([{ id: uuidv4(), role: 'error', content: 'Could not load this chat.' }]);
@@ -281,21 +294,14 @@ function App() {
                         
                         if (data.type === 'final_answer') {
                             setMessages(prev => prev.map(msg =>
-                                msg.id === tempModelMessageId ? { ...msg, content: data.content } : msg
+                                msg.id === tempModelMessageId ? { ...msg, content: data.content, thinking_steps: thinkingSteps || [] } : msg
                             ));
                             if (isNewChat) {
                                 setCurrentChatId(conversationId);
                                 await loadChats();
                             }
                         } else {
-                            const typeMap: {[key: string]: string} = {
-                                thought: 'Анализ',
-                                tool_call: 'Инструмент',
-                                tool_result: 'Результат',
-                            };
-                            const prefix = typeMap[data.type] || 'Шаг';
-                            const formattedStep = `[${prefix}] ${data.content}`;
-                            setThinkingSteps(prev => [...(prev || []), formattedStep]);
+                            setThinkingSteps(prev => [...(prev || []), data]);
                         }
                     } catch (e) {
                         console.error("Error parsing streaming JSON:", e, "JSON string:", jsonString);
@@ -411,14 +417,9 @@ function App() {
                 messages.map(msg => (
                     <div key={msg.id} className={`message-block ${msg.role}`}>
                         <div className="message-content">
-                          <p>{msg.content}</p>
-                          {msg.id === streamingMessageId && thinkingSteps && (
-                              <div className="thinking-steps">
-                                {thinkingSteps.map((step, index) => (
-                                  <div key={index}>{step}</div>
-                                ))}
-                              </div>
-                            )}
+                            {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} />}
+                            <p>{msg.content}</p>
+                            {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} />}
                         </div>
                     </div>
                 ))
