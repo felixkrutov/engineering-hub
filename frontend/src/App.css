@@ -592,3 +592,73 @@ body[data-theme="light"] .app-wrapper,
     background-color: var(--accent-color);
     color: white;
 }
+
+/* Agent Thoughts Component */
+.agent-thoughts-container {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+}
+
+.agent-thoughts-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.agent-thoughts-header h5 {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.agent-thoughts-header button {
+    background: none;
+    border: none;
+    color: var(--accent-color);
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: bold;
+    padding: 0.2rem 0.4rem;
+}
+
+.agent-thoughts-content {
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 0.75rem;
+    border-top: 1px solid var(--border-color);
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9em;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background-color: rgba(0, 0, 0, 0.15);
+    color: #ccc;
+}
+
+.agent-thoughts-content::-webkit-scrollbar {
+    width: 6px;
+}
+.agent-thoughts-content::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 3px;
+}
+
+.app-wrapper[data-theme="light"] .agent-thoughts-container {
+    background: rgba(0, 0, 0, 0.03);
+}
+
+.app-wrapper[data-theme="light"] .agent-thoughts-header {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+.app-wrapper[data-theme="light"] .agent-thoughts-content {
+    background-color: rgba(0, 0, 0, 0.02);
+    color: #333;
+}
