@@ -192,7 +192,7 @@ async def get_chat_history(conversation_id: str):
                 "role": item.get("role"),
                 "content": item.get("parts", [""])[0]
             }
-            if 'thinking_steps' in item:
+            if 'thinking_steps' in item and item['thinking_steps']:
                 message_data['thinking_steps'] = item['thinking_steps']
             formatted_history.append(message_data)
 
@@ -230,135 +230,93 @@ async def rename_chat(conversation_id: str, request: RenameRequest):
 
 @app.post("/api/v1/chat")
 async def chat(request: ChatRequest) -> Any:
-    config = load_config()
-    conversation_id = request.conversation_id
-    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-    
-    history = []
-    os.makedirs(HISTORY_DIR, exist_ok=True)
-
-    if os.path.exists(history_file_path):
-        with open(history_file_path, 'r') as f:
-            try:
-                history = json.load(f)
-            except json.JSONDecodeError:
-                history = []
-
-    final_message = request.message
-    file_id = request.file_id
-    
-    if file_id:
-        try:
-            logger.info(f"RAG request received for file_id: {file_id}")
-            file_info = kb_indexer.get_file_by_id(file_id)
-            if not file_info:
-                raise HTTPException(status_code=404, detail=f"File with id {file_id} not found in index.")
-            
-            file_content = kb_connector.get_file_content(file_id)
-            if not file_content:
-                raise HTTPException(status_code=404, detail=f"Content for file id {file_id} could not be retrieved.")
-            
-            document_text = parse_document(file_info['name'], file_content, file_info['mime_type'])
-            
-            final_message = f"Context from file '{file_info['name']}':\n\n{document_text}\n\nUser query: {request.message}"
-            logger.info("Successfully pre-pended document context to user message.")
-        
-        except Exception as e:
-            logger.error(f"Error processing RAG request for file_id {file_id}: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to process document for RAG.")
-
-    try:
-        model = genai.GenerativeModel(
-            model_name=config.model_name,
-            system_instruction=config.system_prompt if config.system_prompt.strip() else None
-        )
-        chat_session = model.start_chat(history=history)
-        response = await chat_session.send_message_async(final_message)
-        
-        history.append(Message(role="user", parts=[request.message]).model_dump(exclude_none=True))
-        history.append(Message(role="model", parts=[response.text]).model_dump(exclude_none=True))
-
-        with open(history_file_path, 'w') as f:
-            json.dump(history, f, indent=2)
-
-        if len(history) == 2:
-            try:
-                title_prompt = f"Summarize the following conversation in 5 words or less. Crucially, you must respond in the same language as the conversation. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {response.text}\n\nTitle:"
-                title_model = genai.GenerativeModel('gemini-1.5-flash')
-                title_response = title_model.generate_content(title_prompt)
-                chat_title = title_response.text.strip().replace('"', '')
-                title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
-                with open(title_file_path, 'w') as f:
-                    f.write(chat_title)
-            except Exception as e:
-                logger.warning(f"An error occurred during title generation: {e}")
-        
-        return ChatResponse(reply=response.text)
-
-    except ResourceExhausted as e:
-        logger.error(f"Google API quota exceeded: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "reply": "Не удалось обработать запрос: исчерпан лимит запросов к API. Пожалуйста, попробуйте позже или проверьте ваш план и биллинг.",
-                "error": True
-            }
-        )
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in chat endpoint: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "reply": "Произошла непредвиденная ошибка на сервере. Пожалуйста, попробуйте еще раз.",
-                "error": True
-            }
-        )
-
+    # This endpoint is kept for non-streaming compatibility if needed, but the primary is now stream_chat
+    response = ChatResponse(reply="Please use the /api/v1/chat/stream endpoint for chat functionality.", error=True)
+    return JSONResponse(status_code=400, content=response.model_dump())
 
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
     async def event_generator():
+        steps_history: List[Dict[str, str]] = []
         conversation_id = request.conversation_id
         history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-        is_new_chat = not os.path.exists(history_file_path)
+        os.makedirs(HISTORY_DIR, exist_ok=True)
 
         history = []
-        if not is_new_chat:
+        if os.path.exists(history_file_path):
             with open(history_file_path, 'r') as f:
                 try:
                     history = json.load(f)
                 except json.JSONDecodeError:
                     history = []
         
-        steps_history: List[Dict[str, str]] = []
+        final_answer_text = ""
 
-        # Step 1: Acknowledge and think
-        step_1_data = {'type': 'thought', 'content': 'Задача получена. Начинаю анализ.'}
-        steps_history.append(step_1_data)
-        yield f"data: {json.dumps(step_1_data)}\n\n"
-        await asyncio.sleep(1)
+        try:
+            step = {'type': 'thought', 'content': 'Задача получена. Анализирую запрос...'}
+            steps_history.append(step)
+            yield f"data: {json.dumps(step)}\n\n"
+            await asyncio.sleep(0.2)
 
-        # Step 2: Simulate a tool call
-        step_2_data = {'type': 'tool_call', 'content': 'Использую инструмент: get_file_content'}
-        steps_history.append(step_2_data)
-        yield f"data: {json.dumps(step_2_data)}\n\n"
-        await asyncio.sleep(1.5)
+            final_message_for_llm = request.message
 
-        # Step 3: Simulate a tool result (error)
-        step_3_data = {'type': 'tool_result', 'content': 'Ошибка: Файл слишком большой. Лимит токенов превышен.'}
-        steps_history.append(step_3_data)
-        yield f"data: {json.dumps(step_3_data)}\n\n"
-        await asyncio.sleep(1)
+            if request.file_id:
+                step = {'type': 'tool_call', 'content': f"Поиск метаданных файла: {request.file_id}"}
+                steps_history.append(step)
+                yield f"data: {json.dumps(step)}\n\n"
+                file_info = kb_indexer.get_file_by_id(request.file_id)
+                if not file_info:
+                    raise FileNotFoundError(f"Файл с id {request.file_id} не найден в индексе.")
+                
+                step = {'type': 'tool_call', 'content': f"Скачивание файла '{file_info['name']}'..."}
+                steps_history.append(step)
+                yield f"data: {json.dumps(step)}\n\n"
+                file_content = kb_connector.get_file_content(request.file_id)
+                if not file_content:
+                     raise FileNotFoundError(f"Не удалось получить содержимое файла с id {request.file_id}.")
 
-        # Step 4: Final thought before answering
-        step_4_data = {'type': 'thought', 'content': 'Не удалось обработать файл. Формулирую ответ для пользователя.'}
-        steps_history.append(step_4_data)
-        yield f"data: {json.dumps(step_4_data)}\n\n"
-        await asyncio.sleep(0.5)
+                step = {'type': 'tool_call', 'content': f"Анализ и извлечение текста из файла '{file_info['name']}'..."}
+                steps_history.append(step)
+                yield f"data: {json.dumps(step)}\n\n"
+                document_text = parse_document(file_info['name'], file_content, file_info['mime_type'])
+                
+                if "НЕПОДДЕРЖИВАЕМЫЙ" in document_text or "[Error" in document_text or "Ошибка" in document_text:
+                    step = {'type': 'tool_result', 'content': f"Ошибка анализа файла: {document_text}"}
+                    steps_history.append(step)
+                    yield f"data: {json.dumps(step)}\n\n"
+                    final_answer_text = f"К сожалению, не удалось обработать файл '{file_info['name']}'. Причина: {document_text}"
+                else:
+                    step = {'type': 'tool_result', 'content': f"Успешно извлечено {len(document_text)} символов из файла."}
+                    steps_history.append(step)
+                    yield f"data: {json.dumps(step)}\n\n"
 
-        # Step 5: The final answer
-        final_answer_text = "К сожалению, я не могу напрямую проанализировать этот файл, так как он слишком большой."
-        
+                    step = {'type': 'thought', 'content': 'Текст успешно извлечен. Формирую контекст для языковой модели...'}
+                    steps_history.append(step)
+                    yield f"data: {json.dumps(step)}\n\n"
+                    final_message_for_llm = f"Context from file '{file_info['name']}':\n\n{document_text}\n\nUser query: {request.message}"
+            
+            if not final_answer_text:
+                config = load_config()
+                step = {'type': 'thought', 'content': f"Отправка запроса к языковой модели ({config.model_name})..."}
+                steps_history.append(step)
+                yield f"data: {json.dumps(step)}\n\n"
+
+                model = genai.GenerativeModel(
+                    model_name=config.model_name,
+                    system_instruction=config.system_prompt if config.system_prompt.strip() else None
+                )
+                chat_session = model.start_chat(history=history)
+                response = await chat_session.send_message_async(final_message_for_llm)
+                final_answer_text = response.text
+
+        except Exception as e:
+            logger.error(f"Error during stream processing for conversation {conversation_id}: {e}", exc_info=True)
+            error_content = f"Произошла критическая ошибка: {str(e)}"
+            step = {'type': 'error', 'content': error_content}
+            steps_history.append(step)
+            yield f"data: {json.dumps(step)}\n\n"
+            final_answer_text = "К сожалению, во время обработки вашего запроса произошла ошибка. Пожалуйста, попробуйте еще раз."
+
         user_message = Message(role="user", parts=[request.message])
         model_message = Message(
             role="model",
@@ -369,13 +327,12 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         history.append(user_message.model_dump(exclude_none=True))
         history.append(model_message.model_dump(exclude_none=True))
 
-        os.makedirs(HISTORY_DIR, exist_ok=True)
         with open(history_file_path, 'w') as f:
             json.dump(history, f, indent=2)
         logger.info(f"Chat history for {conversation_id} saved with thinking steps.")
-
-        if is_new_chat:
-            try:
+        
+        if len(history) == 2:
+             try:
                 title_prompt = f"Summarize the following conversation in 5 words or less. Crucially, you must respond in the same language as the conversation. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {final_answer_text}\n\nTitle:"
                 title_model = genai.GenerativeModel('gemini-1.5-flash')
                 title_response = title_model.generate_content(title_prompt)
@@ -383,9 +340,9 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
                 with open(title_file_path, 'w') as f:
                     f.write(chat_title)
-            except Exception as e:
+             except Exception as e:
                 logger.warning(f"An error occurred during title generation: {e}")
-        
+
         final_answer_data = {'type': 'final_answer', 'content': final_answer_text}
         yield f"data: {json.dumps(final_answer_data)}\n\n"
 
