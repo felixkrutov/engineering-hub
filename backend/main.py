@@ -69,6 +69,8 @@ app.add_middleware(
 HISTORY_DIR = "chat_histories"
 CONFIG_FILE = "config.json"
 
+# --- Pydantic Models ---
+
 class AppConfig(BaseModel):
     model_name: str
     system_prompt: str
@@ -88,6 +90,18 @@ class ChatInfo(BaseModel):
     
 class RenameRequest(BaseModel):
     new_title: str
+
+class ThinkingStep(BaseModel):
+    type: str
+    content: str
+
+class Message(BaseModel):
+    role: str
+    parts: List[str]
+    thinking_steps: Optional[List[ThinkingStep]] = None
+
+
+# --- API Endpoints ---
 
 def load_config() -> AppConfig:
     try:
@@ -174,10 +188,14 @@ async def get_chat_history(conversation_id: str):
             history_data = json.load(f)
         formatted_history = []
         for item in history_data:
-            formatted_history.append({
+            message_data = {
                 "role": item.get("role"),
                 "content": item.get("parts", [""])[0]
-            })
+            }
+            if 'thinking_steps' in item:
+                message_data['thinking_steps'] = item['thinking_steps']
+            formatted_history.append(message_data)
+
         return formatted_history
     except (json.JSONDecodeError, FileNotFoundError):
         raise HTTPException(status_code=500, detail="Could not read chat history file.")
@@ -257,8 +275,8 @@ async def chat(request: ChatRequest) -> Any:
         chat_session = model.start_chat(history=history)
         response = await chat_session.send_message_async(final_message)
         
-        history.append({"role": "user", "parts": [request.message]})
-        history.append({"role": "model", "parts": [response.text]})
+        history.append(Message(role="user", parts=[request.message]).model_dump(exclude_none=True))
+        history.append(Message(role="model", parts=[response.text]).model_dump(exclude_none=True))
 
         with open(history_file_path, 'w') as f:
             json.dump(history, f, indent=2)
@@ -296,27 +314,79 @@ async def chat(request: ChatRequest) -> Any:
             }
         )
 
+
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
     async def event_generator():
+        conversation_id = request.conversation_id
+        history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+        is_new_chat = not os.path.exists(history_file_path)
+
+        history = []
+        if not is_new_chat:
+            with open(history_file_path, 'r') as f:
+                try:
+                    history = json.load(f)
+                except json.JSONDecodeError:
+                    history = []
+        
+        steps_history: List[Dict[str, str]] = []
+
         # Step 1: Acknowledge and think
-        yield f"data: {json.dumps({'type': 'thought', 'content': 'Задача получена. Начинаю анализ.'})}\n\n"
-        await asyncio.sleep(1) # Simulate work
+        step_1_data = {'type': 'thought', 'content': 'Задача получена. Начинаю анализ.'}
+        steps_history.append(step_1_data)
+        yield f"data: {json.dumps(step_1_data)}\n\n"
+        await asyncio.sleep(1)
 
         # Step 2: Simulate a tool call
-        yield f"data: {json.dumps({'type': 'tool_call', 'content': 'Использую инструмент: get_file_content'})}\n\n"
+        step_2_data = {'type': 'tool_call', 'content': 'Использую инструмент: get_file_content'}
+        steps_history.append(step_2_data)
+        yield f"data: {json.dumps(step_2_data)}\n\n"
         await asyncio.sleep(1.5)
 
         # Step 3: Simulate a tool result (error)
-        yield f"data: {json.dumps({'type': 'tool_result', 'content': 'Ошибка: Файл слишком большой. Лимит токенов превышен.'})}\n\n"
+        step_3_data = {'type': 'tool_result', 'content': 'Ошибка: Файл слишком большой. Лимит токенов превышен.'}
+        steps_history.append(step_3_data)
+        yield f"data: {json.dumps(step_3_data)}\n\n"
         await asyncio.sleep(1)
 
         # Step 4: Final thought before answering
-        yield f"data: {json.dumps({'type': 'thought', 'content': 'Не удалось обработать файл. Формулирую ответ для пользователя.'})}\n\n"
+        step_4_data = {'type': 'thought', 'content': 'Не удалось обработать файл. Формулирую ответ для пользователя.'}
+        steps_history.append(step_4_data)
+        yield f"data: {json.dumps(step_4_data)}\n\n"
         await asyncio.sleep(0.5)
 
         # Step 5: The final answer
         final_answer_text = "К сожалению, я не могу напрямую проанализировать этот файл, так как он слишком большой."
-        yield f"data: {json.dumps({'type': 'final_answer', 'content': final_answer_text})}\n\n"
-    
+        
+        user_message = Message(role="user", parts=[request.message])
+        model_message = Message(
+            role="model",
+            parts=[final_answer_text],
+            thinking_steps=[ThinkingStep(**step) for step in steps_history]
+        )
+        
+        history.append(user_message.model_dump(exclude_none=True))
+        history.append(model_message.model_dump(exclude_none=True))
+
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        with open(history_file_path, 'w') as f:
+            json.dump(history, f, indent=2)
+        logger.info(f"Chat history for {conversation_id} saved with thinking steps.")
+
+        if is_new_chat:
+            try:
+                title_prompt = f"Summarize the following conversation in 5 words or less. Crucially, you must respond in the same language as the conversation. This will be used as a chat title. Do not use quotation marks.\n\nUser: {request.message}\nAI: {final_answer_text}\n\nTitle:"
+                title_model = genai.GenerativeModel('gemini-1.5-flash')
+                title_response = title_model.generate_content(title_prompt)
+                chat_title = title_response.text.strip().replace('"', '')
+                title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
+                with open(title_file_path, 'w') as f:
+                    f.write(chat_title)
+            except Exception as e:
+                logger.warning(f"An error occurred during title generation: {e}")
+        
+        final_answer_data = {'type': 'final_answer', 'content': final_answer_text}
+        yield f"data: {json.dumps(final_answer_data)}\n\n"
+
     return StreamingResponse(event_generator(), media_type="text/event-stream")
