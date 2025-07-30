@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-from google.generativeai.types import Part, FunctionResponse
+# УДАЛЕНА СТРОКА: from google.generativeai.types import Part, FunctionResponse
 
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
@@ -282,7 +282,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
                 part = response.candidates[0].content.parts[0]
                 
-                if part.function_call.name:
+                if hasattr(part, 'function_call') and part.function_call.name:
                     fc = part.function_call
                     
                     step_data = {'type': 'thought', 'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"}
@@ -295,13 +295,14 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
+                    # ИЗМЕНЕНИЕ ЗДЕСЬ: Добавлены genai.Part и genai.FunctionResponse
                     response = await chat_session.send_message_async(
-                        Part(function_response=FunctionResponse(
+                        genai.Part(function_response=genai.FunctionResponse(
                             name=fc.name,
                             response={"content": tool_result}
                         ))
                     )
-                elif part.text:
+                elif hasattr(part, 'text') and part.text:
                     final_answer_text = part.text
                     break
                 else:
