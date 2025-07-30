@@ -12,6 +12,7 @@ interface Chat {
 }
 
 interface Message {
+  id: string;
   role: 'user' | 'model' | 'error';
   content: string;
 }
@@ -50,6 +51,9 @@ function App() {
   const [kbSearchResults, setKbSearchResults] = useState<any[]>([]);
   const [isKbSearching, setIsKbSearching] = useState(false);
   const [kbError, setKbError] = useState<string | null>(null);
+
+  const [thinkingSteps, setThinkingSteps] = useState<string[] | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
 
   const [modalState, setModalState] = useState<ModalState>({
     visible: false,
@@ -121,7 +125,7 @@ function App() {
       const data = await response.json();
       console.info('KB search successful. Found items:', data);
       setKbSearchResults(data);
-    } catch (error) {
+    } catch (error)      {
       console.error('An error occurred during KB search:', error);
       setKbError('Не удалось выполнить поиск. Проверьте консоль для деталей.');
     } finally {
@@ -155,11 +159,11 @@ function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
       if (!response.ok) throw new Error("Chat history not found");
-      const data: Message[] = await response.json();
+      const data: Message[] = (await response.json()).map((m: any) => ({...m, id: uuidv4()}));
       setMessages(data);
     } catch(error) {
       console.error("Failed to select chat:", error);
-      setMessages([{ role: 'error', content: 'Could not load this chat.' }]);
+      setMessages([{ id: uuidv4(), role: 'error', content: 'Could not load this chat.' }]);
     } finally {
       setIsLoading(false);
     }
@@ -230,39 +234,84 @@ function App() {
   };
 
   const handleSendMessage = async () => {
-    const message = userInput.trim();
-    if (!message || isLoading) return;
+    const messageText = userInput.trim();
+    if (!messageText || isLoading) return;
 
     setIsLoading(true);
-    const userMessage: Message = { role: 'user', content: message };
-    setMessages(prev => [...prev, userMessage]);
     setUserInput('');
-    
+
+    const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText };
     const isNewChat = currentChatId === null;
     const conversationId = currentChatId || uuidv4();
+    
+    const tempModelMessageId = uuidv4();
+    const tempModelMessage: Message = { id: tempModelMessageId, role: 'model', content: '' };
+    setMessages(prev => [...prev, userMessage, tempModelMessage]);
+    setStreamingMessageId(tempModelMessageId);
+    setThinkingSteps([]);
 
     try {
-        const response = await fetch(`${API_BASE_URL}/v1/chat`, {
+        const response = await fetch(`${API_BASE_URL}/v1/chat/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: message, conversation_id: conversationId })
+            body: JSON.stringify({ message: messageText, conversation_id: conversationId, file_id: null })
         });
 
-        if (!response.ok) throw new Error('Network response was not ok');
-        const data = await response.json();
-        const modelMessage: Message = { role: 'model', content: data.reply };
-        setMessages(prev => [...prev, modelMessage]);
-
-        if (isNewChat) {
-          setCurrentChatId(conversationId);
-          await loadChats();
+        if (!response.ok || !response.body) {
+            throw new Error(`Streaming failed with status: ${response.status}`);
         }
 
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop() || '';
+
+            for (const part of parts) {
+                if (part.startsWith('data: ')) {
+                    const jsonString = part.substring(6);
+                    try {
+                        const data = JSON.parse(jsonString);
+                        
+                        if (data.type === 'final_answer') {
+                            setMessages(prev => prev.map(msg =>
+                                msg.id === tempModelMessageId ? { ...msg, content: data.content } : msg
+                            ));
+                            if (isNewChat) {
+                                setCurrentChatId(conversationId);
+                                await loadChats();
+                            }
+                        } else {
+                            const typeMap: {[key: string]: string} = {
+                                thought: 'Анализ',
+                                tool_call: 'Инструмент',
+                                tool_result: 'Результат',
+                            };
+                            const prefix = typeMap[data.type] || 'Шаг';
+                            const formattedStep = `[${prefix}] ${data.content}`;
+                            setThinkingSteps(prev => [...(prev || []), formattedStep]);
+                        }
+                    } catch (e) {
+                        console.error("Error parsing streaming JSON:", e, "JSON string:", jsonString);
+                    }
+                }
+            }
+        }
     } catch (error) {
-        const errorMessage: Message = { role: 'error', content: 'Sorry, something went wrong. Please try again.' };
-        setMessages(prev => [...prev, errorMessage]);
+        console.error("Streaming chat failed:", error);
+        setMessages(prev => prev.map(msg =>
+            msg.id === tempModelMessageId ? { ...msg, role: 'error', content: 'Ошибка потоковой передачи ответа.' } : msg
+        ));
     } finally {
         setIsLoading(false);
+        setStreamingMessageId(null);
+        setThinkingSteps(null);
     }
   };
 
@@ -292,7 +341,7 @@ function App() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, thinkingSteps]);
 
   useEffect(() => {
     adjustTextareaHeight();
@@ -359,10 +408,17 @@ function App() {
                     <p>Начните новый диалог или выберите существующий</p>
                 </div>
             ) : (
-                messages.map((msg, index) => (
-                    <div key={index} className={`message-block ${msg.role}`}>
+                messages.map(msg => (
+                    <div key={msg.id} className={`message-block ${msg.role}`}>
                         <div className="message-content">
                           <p>{msg.content}</p>
+                          {msg.id === streamingMessageId && thinkingSteps && (
+                              <div className="thinking-steps">
+                                {thinkingSteps.map((step, index) => (
+                                  <div key={index}>{step}</div>
+                                ))}
+                              </div>
+                            )}
                         </div>
                     </div>
                 ))
