@@ -3,7 +3,7 @@ import io
 from typing import List, Dict, Optional
 
 import yadisk
-from yadisk.exceptions import AuthError, PathNotFoundError
+from yadisk import yadisk
 
 from .connector import KnowledgeBaseConnector
 
