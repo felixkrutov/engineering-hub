@@ -1,3 +1,5 @@
+# /backend/main.py (полная исправленная версия с логгированием)
+
 import logging
 import os
 import json
@@ -13,7 +15,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-# [ИЗМЕНЕНИЕ 1] Исправляем импорт. Теперь импортируем весь модуль types.
+# [ИЗМЕНЕНИЕ 1] Исправляем импорт.
 from google.generativeai import types
 
 from kb_service.connector import MockConnector
@@ -260,6 +262,9 @@ async def chat(request: ChatRequest) -> Any:
 
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
+    # [ИЗМЕНЕНИЕ 3] Добавляем "канарейку" для проверки версии кода
+    logger.warning("!!! ВЫПОЛНЯЕТСЯ НОВАЯ ВЕРСИЯ КОДА (v3) !!!")
+    
     async def event_generator():
         steps_history: List[Dict[str, str]] = []
         conversation_id = request.conversation_id
@@ -291,40 +296,62 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 initial_prompt += f"\n\n[Контекст файла: для анализа файла используй инструмент get_document_content с file_id='{request.file_id}']"
             
             await yield_and_store({'type': 'thought', 'content': 'Отправляю первоначальный запрос модели...'})
-            response = chat.send_message(initial_prompt)
+            
+            # --- Изменение в этой части ---
+            # Убедимся, что история правильно конвертируется для модели
+            chat_history_for_model = []
+            for msg in history:
+                role = msg.get('role')
+                parts = msg.get('parts')
+                if role and parts:
+                    chat_history_for_model.append({'role': role, 'parts': parts})
 
-            while True:
-                # В новых версиях лучше проверять, что candidate существует
-                if not response.candidates:
-                    final_answer_text = "Модель не вернула кандидатов в ответе."
-                    break
+            # Передаем и историю, и новый промпт
+            if chat_history_for_model:
+                 chat.history = chat_history_for_model
 
-                part = response.candidates[0].content.parts[0]
+            response = chat.send_message(initial_prompt, stream=True)
+            # --- Конец изменения ---
+            
+            collected_chunks = []
+            final_answer_text = ""
+            
+            for chunk in response:
+                if chunk.candidates and chunk.candidates[0].content.parts:
+                    part = chunk.candidates[0].content.parts[0]
+                    
+                    if part.function_call.name:
+                        # Логика обработки function call остается такой же
+                        fc = part.function_call
+                        await yield_and_store({'type': 'thought', 'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"})
+                        
+                        if fc.name == 'get_document_content':
+                            tool_result = get_document_content(file_id=fc.args['file_id'])
+                        else:
+                            tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
+
+                        await yield_and_store({'type': 'tool_result', 'content': tool_result})
+                        
+                        response_from_tool = chat.send_message(
+                            content=types.Part(function_response=types.FunctionResponse(
+                                name=fc.name,
+                                response={"content": tool_result}
+                            )),
+                            stream=True
+                        )
+                        # Обрабатываем стрим ответа после вызова инструмента
+                        for tool_chunk in response_from_tool:
+                             if tool_chunk.text:
+                                final_answer_text += tool_chunk.text
+                        break # Выходим из основного цикла после обработки инструмента
+
+                    elif part.text:
+                        # Это часть стримингового ответа
+                        final_answer_text += part.text
                 
-                if part.function_call.name:
-                    fc = part.function_call
-                    await yield_and_store({'type': 'thought', f'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"})
-                    
-                    if fc.name == 'get_document_content':
-                        tool_result = get_document_content(file_id=fc.args['file_id'])
-                    else:
-                        tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
+            if not final_answer_text:
+                final_answer_text = "Модель не вернула текстовый ответ."
 
-                    await yield_and_store({'type': 'tool_result', 'content': tool_result})
-                    
-                    # [ИЗМЕНЕНИЕ 2] Используем types.Part и types.FunctionResponse для отправки результата
-                    response = chat.send_message(
-                        content=types.Part(function_response=types.FunctionResponse(
-                            name=fc.name,
-                            response={"content": tool_result}
-                        ))
-                    )
-                elif part.text:
-                    final_answer_text = part.text
-                    break
-                else:
-                    final_answer_text = "Модель вернула пустой ответ."
-                    break
 
         except Exception as e:
             logger.error(f"Error during agent loop for conversation {conversation_id}: {e}", exc_info=True)
@@ -359,4 +386,5 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
         await yield_and_store({'type': 'final_answer', 'content': final_answer_text})
 
+    # [ИЗМЕНЕНИЕ 2] Добавляем скобки для вызова генератора
     return StreamingResponse(event_generator(), media_type="text/event-stream")
