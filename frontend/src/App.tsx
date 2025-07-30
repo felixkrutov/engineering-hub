@@ -60,6 +60,7 @@ function App() {
   const [isKbSearching, setIsKbSearching] = useState(false);
   const [kbError, setKbError] = useState<string | null>(null);
 
+  const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[] | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [isFinalizing, setIsFinalizing] = useState<string | null>(null);
@@ -141,11 +142,10 @@ function App() {
       setIsKbSearching(false);
     }
   };
-
-  const handleUseFile = (file: any) => {
-    console.info('"Use file" button clicked for file:', file);
-    const message = `Проанализируй следующий файл: ${file.name}`;
-    setUserInput(message);
+  
+  const handleUseFile = (fileId: string, fileName: string) => {
+    setActiveFileId(fileId);
+    setUserInput(`Проанализируй файл '${fileName}' и ответь на мой вопрос.`);
     setIsSettingsModalOpen(false);
     userInputRef.current?.focus();
   };
@@ -173,7 +173,7 @@ function App() {
           id: uuidv4(),
           role: m.role,
           content: m.content,
-          displayedContent: m.content, // For historical messages, display immediately
+          displayedContent: m.content,
           thinking_steps: m.thinking_steps
       }));
       setMessages(formattedMessages);
@@ -200,12 +200,11 @@ function App() {
     });
     if (typeof newTitle === 'string' && newTitle.trim() && newTitle.trim() !== currentTitle) {
         try {
-            const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, {
+            await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ new_title: newTitle.trim() })
             });
-            if (!response.ok) throw new Error('Failed to rename chat');
             await loadChats();
         } catch (error) {
             console.error("Error renaming chat:", error);
@@ -221,12 +220,8 @@ function App() {
     });
     if (confirmed) {
         try {
-            const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, { method: 'DELETE' });
-            if (!response.ok) throw new Error('Failed to delete chat');
-            
-            if (currentChatId === chatId) {
-                startNewChat();
-            }
+            await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, { method: 'DELETE' });
+            if (currentChatId === chatId) startNewChat();
             await loadChats();
         } catch (error) {
             console.error("Error deleting chat:", error);
@@ -238,10 +233,6 @@ function App() {
     loadChats();
     loadConfig();
   }, []);
-
-  const updateTheme = (newTheme: string) => {
-    console.log(`Theme updated to ${newTheme}`);
-  };
 
   const scrollToBottom = () => {
     if (chatContainerRef.current) {
@@ -269,64 +260,62 @@ function App() {
     setThinkingSteps(liveThinkingSteps);
 
     try {
-        const response = await fetch(`${API_BASE_URL}/v1/chat/stream`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: messageText, conversation_id: conversationId, file_id: null })
-        });
+      const response = await fetch(`${API_BASE_URL}/v1/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: messageText,
+          conversation_id: conversationId,
+          file_id: activeFileId,
+        }),
+      });
+      setActiveFileId(null); // Reset after sending
 
-        if (!response.ok || !response.body) {
-            throw new Error(`Streaming failed with status: ${response.status}`);
-        }
+      if (!response.ok || !response.body) throw new Error(`Streaming failed: ${response.status}`);
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
-            const parts = buffer.split('\n\n');
-            buffer = parts.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
 
-            for (const part of parts) {
-                if (part.startsWith('data: ')) {
-                    const jsonString = part.substring(6);
-                    try {
-                        const data = JSON.parse(jsonString);
-                        
-                        if (data.type === 'final_answer') {
-                            setIsFinalizing(tempModelMessageId);
-                            setMessages(currentMessages => 
-                                currentMessages.map(m => 
-                                    m.id === tempModelMessageId 
-                                    ? { ...m, content: data.content, thinking_steps: liveThinkingSteps } 
-                                    : m
-                                )
-                            );
-                            
-                            setTimeout(() => {
-                                setThinkingSteps(null);
-                                setStreamingMessageId(null);
-                                setIsFinalizing(null);
-                            }, 500); // Must match CSS animation duration
-
-                            if (isNewChat) {
-                                setCurrentChatId(conversationId);
-                                await loadChats();
-                            }
-                        } else {
-                            liveThinkingSteps.push(data);
-                            setThinkingSteps([...liveThinkingSteps]);
-                        }
-                    } catch (e) {
-                        console.error("Error parsing streaming JSON:", e, "JSON string:", jsonString);
-                    }
+        for (const part of parts) {
+          if (part.startsWith('data: ')) {
+            const jsonString = part.substring(6);
+            try {
+              const data = JSON.parse(jsonString);
+              if (data.type === 'final_answer') {
+                setIsFinalizing(tempModelMessageId);
+                setMessages(currentMessages => 
+                    currentMessages.map(m => 
+                        m.id === tempModelMessageId 
+                        ? { ...m, content: data.content, thinking_steps: liveThinkingSteps } 
+                        : m
+                    )
+                );
+                setTimeout(() => {
+                    setThinkingSteps(null);
+                    setStreamingMessageId(null);
+                    setIsFinalizing(null);
+                }, 500);
+                if (isNewChat) {
+                    setCurrentChatId(conversationId);
+                    await loadChats();
                 }
-            }
+              } else {
+                liveThinkingSteps.push(data);
+                setThinkingSteps([...liveThinkingSteps]);
+              }
+            } catch (e) { console.error("JSON parse error:", e, "Payload:", jsonString); }
+          }
         }
+      }
     } catch (error) {
         console.error("Streaming chat failed:", error);
         setMessages(prev => prev.map(msg =>
@@ -338,26 +327,22 @@ function App() {
   };
 
   useEffect(() => {
-    const messageToType = messages.find(
-      (m) => m.role === 'model' && m.content.length > m.displayedContent.length
-    );
-
+    const messageToType = messages.find(m => m.role === 'model' && m.content.length > m.displayedContent.length);
     if (messageToType) {
       const interval = setInterval(() => {
-        setMessages((currentMessages) =>
-          currentMessages.map((m) => {
+        setMessages(currentMessages => currentMessages.map(m => {
             if (m.id === messageToType.id) {
               const nextCharIndex = m.displayedContent.length;
-              return {
-                ...m,
-                displayedContent: m.content.substring(0, nextCharIndex + 1),
-              };
+              if (nextCharIndex >= m.content.length) {
+                clearInterval(interval);
+                return m;
+              }
+              return { ...m, displayedContent: m.content.substring(0, nextCharIndex + 1) };
             }
             return m;
           })
         );
-      }, 20); // Typewriter speed
-
+      }, 20);
       return () => clearInterval(interval);
     }
   }, [messages]);
@@ -373,11 +358,8 @@ function App() {
   const showModal = (props: Partial<Omit<ModalState, 'visible' | 'onConfirm'>>) => {
     return new Promise<string | boolean | null>((resolve) => {
       setModalState({
-        visible: true,
-        title: props.title || '',
-        message: props.message || '',
-        showInput: props.showInput || false,
-        inputValue: props.inputValue || '',
+        visible: true, title: props.title || '', message: props.message || '',
+        showInput: props.showInput || false, inputValue: props.inputValue || '',
         confirmText: props.confirmText || 'OK',
         onConfirm: (value) => {
           setModalState(prev => ({...prev, visible: false}));
@@ -387,38 +369,20 @@ function App() {
     });
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, thinkingSteps, isFinalizing]);
+  useEffect(scrollToBottom, [messages, thinkingSteps, isFinalizing]);
+  useEffect(adjustTextareaHeight, [userInput]);
 
-  useEffect(() => {
-    adjustTextareaHeight();
-  }, [userInput]);
-
-  const handleThemeToggle = () => {
-    const newTheme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    updateTheme(newTheme);
-  };
-  
+  const handleThemeToggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
   const hasChanges = dirtyModelName !== savedModelName || dirtySystemPrompt !== savedSystemPrompt;
 
   return (
     <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
-        {sidebarCollapsed && (
-          <button className="sidebar-reopen-btn" onClick={() => setSidebarCollapsed(false)}>
-            <FaBars />
-          </button>
-        )}
+        {sidebarCollapsed && (<button className="sidebar-reopen-btn" onClick={() => setSidebarCollapsed(false)}><FaBars /></button>)}
 
       <aside className="sidebar">
         <div className="sidebar-header">
-          <button className="new-chat-btn" onClick={startNewChat}>
-            <i className="bi bi-plus-lg"></i> Новый чат
-          </button>
-           <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}>
-            <FaTimes />
-          </button>
+          <button className="new-chat-btn" onClick={startNewChat}><i className="bi bi-plus-lg"></i> Новый чат</button>
+          <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}><FaTimes /></button>
         </div>
         <ul className="chat-list">
             {chats.map(chat => (
@@ -437,12 +401,8 @@ function App() {
             <span>{user.username}</span>
           </div>
           <div>
-            <button className="theme-toggle-btn" title="Сменить тему" onClick={handleThemeToggle}>
-              {theme === 'dark' ? <FaSun /> : <FaMoon />}
-            </button>
-            <button className="settings-btn" title="Настройки" onClick={() => setIsSettingsModalOpen(true)}>
-              <FaCog />
-            </button>
+            <button className="theme-toggle-btn" title="Сменить тему" onClick={handleThemeToggle}>{theme === 'dark' ? <FaSun /> : <FaMoon />}</button>
+            <button className="settings-btn" title="Настройки" onClick={() => setIsSettingsModalOpen(true)}><FaCog /></button>
           </div>
         </div>
       </aside>
@@ -451,13 +411,10 @@ function App() {
         <div className="chat-area">
           <div className="chat-container" ref={chatContainerRef}>
             {messages.length === 0 ? (
-                <div className="welcome-screen">
-                    <h1>Mossa AI</h1>
-                    <p>Начните новый диалог или выберите существующий</p>
-                </div>
+                <div className="welcome-screen"><h1>Mossa AI</h1><p>Начните новый диалог или выберите существующий</p></div>
             ) : (
                 messages.map(msg => (
-                    <div key={msg.id} className={`message-block ${msg.role} ${msg.content === msg.displayedContent ? 'done' : ''}`}>
+                    <div key={msg.id} className={`message-block ${msg.role} ${msg.content.length > 0 && msg.content === msg.displayedContent ? 'done' : ''}`}>
                         <div className="message-content">
                             {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} defaultCollapsed={true} />}
                             <p className="content">{msg.displayedContent}</p>
@@ -470,18 +427,9 @@ function App() {
           <div className="input-area-wrapper">
             <div className="input-area">
               <textarea
-                ref={userInputRef}
-                className="user-input"
-                placeholder="Спросите что-нибудь..."
-                rows={1}
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendMessage();
-                    }
-                }}
+                ref={userInputRef} className="user-input" placeholder="Спросите что-нибудь..." rows={1}
+                value={userInput} onChange={(e) => setUserInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}}
               />
               <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
                 {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
@@ -494,17 +442,8 @@ function App() {
       {modalState.visible && (
         <div className={`modal-overlay visible`} onClick={() => modalState.onConfirm(null)}>
             <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-                <h3>{modalState.title}</h3>
-                <p>{modalState.message}</p>
-                {modalState.showInput && (
-                    <input
-                        type="text"
-                        className="modal-input"
-                        value={modalState.inputValue}
-                        onChange={(e) => setModalState(prev => ({...prev, inputValue: e.target.value }))}
-                        autoFocus
-                    />
-                )}
+                <h3>{modalState.title}</h3><p>{modalState.message}</p>
+                {modalState.showInput && (<input type="text" className="modal-input" value={modalState.inputValue} onChange={(e) => setModalState(prev => ({...prev, inputValue: e.target.value }))} autoFocus />)}
                 <div className="modal-actions">
                     <button className="modal-btn-cancel" onClick={() => modalState.onConfirm(null)}>Отмена</button>
                     <button className="modal-btn-confirm" onClick={() => modalState.onConfirm(modalState.showInput ? modalState.inputValue : true)}>{modalState.confirmText}</button>
@@ -516,10 +455,7 @@ function App() {
       {isSettingsModalOpen && (
         <div className="modal-overlay visible">
           <div className="modal-box settings-modal">
-            <div className="modal-header">
-              <h2>Настройки</h2>
-              <button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)}>×</button>
-            </div>
+            <div className="modal-header"><h2>Настройки</h2><button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)}>×</button></div>
             <div className="modal-content">
               <div className="tabs">
                 <button className={`tab-btn ${activeSettingsTab === 'ai' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('ai')}>Настройки ИИ</button>
@@ -528,58 +464,27 @@ function App() {
               <div className="tab-content">
                 {activeSettingsTab === 'ai' && (
                   <div className="ai-settings">
-                    <label htmlFor="model-name">Модель</label>
-                    <input id="model-name" type="text" value={dirtyModelName} onChange={(e) => setDirtyModelName(e.target.value)} />
-                    <label htmlFor="system-prompt">Системный промпт</label>
-                    <textarea id="system-prompt" rows={10} value={dirtySystemPrompt} onChange={(e) => setDirtySystemPrompt(e.target.value)} />
+                    <label htmlFor="model-name">Модель</label><input id="model-name" type="text" value={dirtyModelName} onChange={(e) => setDirtyModelName(e.target.value)} />
+                    <label htmlFor="system-prompt">Системный промпт</label><textarea id="system-prompt" rows={10} value={dirtySystemPrompt} onChange={(e) => setDirtySystemPrompt(e.target.value)} />
                   </div>
                 )}
                 {activeSettingsTab === 'db' && (
                   <div className="db-settings">
                     <div className="kb-search-bar">
-                      <input
-                        type="text"
-                        placeholder="Поиск по документам..."
-                        value={kbSearchQuery}
-                        onChange={(e) => setKbSearchQuery(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleKbSearch(); }}
-                      />
-                      <button onClick={handleKbSearch} disabled={isKbSearching || !kbSearchQuery.trim()}>
-                        {isKbSearching ? <ClipLoader color="#333" size={16} /> : 'Найти'}
-                      </button>
+                      <input type="text" placeholder="Поиск по документам..." value={kbSearchQuery} onChange={(e) => setKbSearchQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleKbSearch(); }} />
+                      <button onClick={handleKbSearch} disabled={isKbSearching || !kbSearchQuery.trim()}>{isKbSearching ? <ClipLoader color="#333" size={16} /> : 'Найти'}</button>
                     </div>
                     <div className="kb-search-results">
                       {kbError && <p className="error-message">{kbError}</p>}
-                      {isKbSearching ? (
-                        <div className="spinner-container"><ClipLoader color="#888" size={30} /></div>
-                      ) : (
-                        kbSearchResults.length > 0 ? (
-                          <ul>
-                            {kbSearchResults.map((file) => (
-                              <li key={file.id}>
-                                <span>{file.name} (Тип: {file.mime_type})</span>
-                                <button onClick={() => handleUseFile(file)}>Использовать</button>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p>Результаты поиска появятся здесь.</p>
-                        )
+                      {isKbSearching ? (<div className="spinner-container"><ClipLoader color="#888" size={30} /></div>) : (
+                        kbSearchResults.length > 0 ? (<ul>{kbSearchResults.map((file) => (<li key={file.id}><span>{file.name} (Тип: {file.mime_type})</span><button onClick={() => handleUseFile(file.id, file.name)}>Использовать</button></li>))}</ul>) : (<p>Результаты поиска появятся здесь.</p>)
                       )}
                     </div>
                   </div>
                 )}
               </div>
             </div>
-            <div className="modal-footer">
-               <button
-                className={`modal-btn-confirm ${!hasChanges || isSaving ? 'disabled' : ''}`}
-                onClick={handleSaveSettings}
-                disabled={!hasChanges || isSaving}
-              >
-                {isSaving ? <ClipLoader color="#ffffff" size={16} /> : 'Сохранить'}
-              </button>
-            </div>
+            <div className="modal-footer"><button className={`modal-btn-confirm ${!hasChanges || isSaving ? 'disabled' : ''}`} onClick={handleSaveSettings} disabled={!hasChanges || isSaving}>{isSaving ? <ClipLoader color="#ffffff" size={16} /> : 'Сохранить'}</button></div>
           </div>
         </div>
       )}
