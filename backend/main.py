@@ -185,9 +185,26 @@ async def get_chat_history(conversation_id: str):
     
     try:
         with open(history_file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            history_data = json.load(f)
+
+        # [ИСПРАВЛЕНО] Преобразуем данные в формат, который ожидает фронтенд.
+        # Это решает проблему "белого экрана" при открытии старых чатов.
+        # Мы создаем поле 'content' из первого элемента списка 'parts'.
+        formatted_history = []
+        for item in history_data:
+            message_data = {
+                "role": item.get("role"),
+                # Безопасно получаем первый элемент из 'parts' или пустую строку, если его нет
+                "content": item.get("parts", [""])[0] 
+            }
+            # Если у сообщения есть "шаги размышления", добавляем их тоже.
+            if 'thinking_steps' in item and item['thinking_steps']:
+                message_data['thinking_steps'] = item['thinking_steps']
+            formatted_history.append(message_data)
+
+        return formatted_history
     except (json.JSONDecodeError, FileNotFoundError):
-        raise HTTPException(status_code=500, detail="Could not read chat history file.")
+        raise HTTPException(status_code=500, detail="Could not read or parse chat history file.")
 
 @app.delete("/api/v1/chats/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_chat(conversation_id: str):
@@ -229,7 +246,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         os.makedirs(HISTORY_DIR, exist_ok=True)
         final_answer_text = "Произошла ошибка при обработке ответа."
 
-        # Инициализируем history здесь, чтобы она была доступна всегда, даже если try/except сработает
         history = []
         if os.path.exists(history_file_path):
             with open(history_file_path, 'r', encoding='utf-8') as f:
@@ -238,8 +254,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         try:
             config = load_config()
 
-            # Условное создание модели: передаем system_instruction, только если промпт не пустой.
-            # Это решает ошибку "content' argument must not be empty".
             model_kwargs = {
                 'model_name': config.model_name,
                 'tools': [get_document_content]
@@ -249,14 +263,12 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             
             model = genai.GenerativeModel(**model_kwargs)
             
-            # Создаем сессию чата и передаем ему историю
             chat_session = model.start_chat(history=[types.Content(**msg) for msg in history])
             
             initial_prompt = request.message
             if request.file_id:
                 initial_prompt += f"\n\n[Контекст файла: для анализа файла используй инструмент get_document_content с file_id='{request.file_id}']"
             
-            # --- Мыслительный цикл ---
             step_data = {'type': 'thought', 'content': 'Отправляю запрос модели...'}
             steps_history.append(step_data)
             yield f"data: {json.dumps(step_data)}\n\n"
@@ -302,7 +314,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps({'type': 'error', 'content': error_content})}\n\n"
             final_answer_text = "К сожалению, произошла ошибка. Не удалось завершить мыслительный процесс."
         
-        # --- Сохранение истории ---
         user_message = Message(role="user", parts=[request.message])
         model_message = Message(
             role="model",
@@ -316,7 +327,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         with open(history_file_path, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
         
-        # --- Генерация заголовка (только для новых чатов) ---
         if len(history) == 2:
              try:
                 title_prompt = f"Summarize the following conversation in 5 words or less in Russian. User: {request.message}\nAI: {final_answer_text}\n\nTitle:"
@@ -329,7 +339,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
              except Exception as e:
                 logger.warning(f"An error occurred during title generation: {e}")
 
-        # --- Отправка финального ответа ---
         final_data = {'type': 'final_answer', 'content': final_answer_text}
         yield f"data: {json.dumps(final_data)}\n\n"
 
