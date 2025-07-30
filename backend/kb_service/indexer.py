@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 from .connector import KnowledgeBaseConnector
 
 logger = logging.getLogger(__name__)
@@ -27,3 +27,9 @@ class KnowledgeBaseIndexer:
         
         logger.info(f"Search found {len(results)} results.")
         return results
+
+    def get_file_by_id(self, file_id: str) -> Optional[Dict[str, str]]:
+        for file_meta in self.index:
+            if file_meta.get('id') == file_id:
+                return file_meta
+        return None
