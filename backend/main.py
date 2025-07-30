@@ -258,9 +258,13 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             
             model = genai.GenerativeModel(**model_kwargs)
             
-            # [ИСПРАВЛЕНО] Убираем ошибочный вызов types.Content.
-            # Метод start_chat принимает список словарей напрямую.
-            chat_session = model.start_chat(history=history)
+            # [ИСПРАВЛЕНО] Очищаем историю от кастомных полей (thinking_steps) перед отправкой в модель.
+            cleaned_history = [
+                {"role": msg["role"], "parts": msg["parts"]}
+                for msg in history
+            ]
+            
+            chat_session = model.start_chat(history=cleaned_history)
             
             initial_prompt = request.message
             if request.file_id:
