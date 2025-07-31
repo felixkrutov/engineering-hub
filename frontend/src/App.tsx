@@ -483,16 +483,21 @@ function App() {
                     {kbFilesError && <p className="error-message">{kbFilesError}</p>}
                     {isKbFilesLoading ? (<div className="spinner-container"><ClipLoader color="#888" size={30} /></div>) : (
                       kbFiles.length > 0 ? (
-                        <ul className="kb-file-list">
-                          {kbFiles.map((file) => (
-                            <li key={file.id} className="kb-file-item">
-                              <span className="kb-file-name">{file.name}</span>
-                              <button className="kb-file-use-btn" onClick={() => handleUseFile(file.id, file.name)}>
-                                Использовать
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
+                        <div className="kb-file-list-container">
+                          <ul className="kb-file-list">
+                            {kbFiles.map((file) => (
+                              <li key={file.id} className="kb-file-item">
+                                <span className="kb-file-name">{file.name}</span>
+                                <button 
+                                  className="modal-btn-confirm kb-use-btn"
+                                  onClick={() => handleUseFile(file.id, file.name)}
+                                >
+                                  Использовать
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       ) : (<p>Файлы в базе знаний не найдены.</p>)
                     )}
                   </div>
