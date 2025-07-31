@@ -5,6 +5,7 @@ import uuid
 import asyncio
 from datetime import datetime
 import google.generativeai as genai
+import google.generativeai.types as types
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,8 +14,6 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
-# ВОЗВРАЩАЕМ ПРАВИЛЬНЫЙ ИМПОРТ
-from google.generativeai.types import Part, FunctionResponse
 
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
@@ -296,9 +295,8 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    # ИЗМЕНЕНИЕ ЗДЕСЬ: Используем прямой импорт Part и FunctionResponse
                     response = await chat_session.send_message_async(
-                        Part(function_response=FunctionResponse(
+                        types.Part(function_response=types.FunctionResponse(
                             name=fc.name,
                             response={"content": tool_result}
                         ))
