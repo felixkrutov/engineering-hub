@@ -53,6 +53,7 @@ services:
     depends_on:
       - backend
       - frontend
+    # --- INSTRUCTION: Corrected command with chmod ---
     command: >
       sh -c "
         chmod +x /app/wait-for-it.sh && \
