@@ -45,15 +45,20 @@ services:
   nginx:
     build: ./nginx
     container_name: engineering-hub-nginx
-    # [ИСПРАВЛЕНО] Добавляем restart, чтобы решить проблему "гонки" при старте.
-    # Если nginx запустится раньше backend, он упадет, но Docker Compose его перезапустит.
-    restart: unless-stopped
-    depends_on:
-      - frontend
-      - backend
     ports:
       # Системный Nginx обращается на 127.0.0.1:8081, а этот порт маппится на порт 80 внутри контейнера.
       - "8081:80"
+    volumes:
+      - ./nginx/wait-for-it.sh:/app/wait-for-it.sh
+    depends_on:
+      - backend
+      - frontend
+    command: >
+      sh -c "
+        chmod +x /app/wait-for-it.sh && \
+        /app/wait-for-it.sh backend:8000 --timeout=60 --strict -- \
+        nginx -g 'daemon off;'
+      "
 
 volumes:
   postgres_data:
