@@ -109,11 +109,18 @@ app.add_middleware(
 
 HISTORY_DIR = "chat_histories"
 CONFIG_FILE = "config.json"
+# Default prompt for the controller agent, used if no config file is found.
+CONTROLLER_SYSTEM_PROMPT = "You are a helpful assistant."
 
 # --- Pydantic Models ---
-class AppConfig(BaseModel):
+# New nested structure for agent settings
+class AgentSettings(BaseModel):
     model_name: str
     system_prompt: str
+
+class AppConfig(BaseModel):
+    executor: AgentSettings
+    controller: AgentSettings
 
 class ChatRequest(BaseModel):
     message: str
@@ -138,15 +145,22 @@ class Message(BaseModel):
 
 
 # --- API Endpoints ---
+# Updated to handle new nested structure and provide robust defaults
 def load_config() -> AppConfig:
+    default_config = AppConfig(
+        executor=AgentSettings(model_name='gemini-1.5-pro', system_prompt=''),
+        controller=AgentSettings(model_name='gpt-4o-mini', system_prompt=CONTROLLER_SYSTEM_PROMPT)
+    )
+    if not os.path.exists(CONFIG_FILE):
+        return default_config
     try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return AppConfig(**data)
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return AppConfig(model_name='gemini-1.5-pro', system_prompt='')
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # Validate against the model, filling in any missing fields with defaults.
+            return AppConfig.model_validate(data)
+    except (json.JSONDecodeError, TypeError, KeyError, ValueError) as e:
+        logger.warning(f"Could not load or validate config file, using defaults. Error: {e}")
+        return default_config
 
 def save_config(config: AppConfig):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -163,7 +177,6 @@ async def set_config(config: AppConfig):
 
 @app.get("/api/kb/search")
 async def search_kb(query: str) -> List[Dict[str, str]]:
-    # This endpoint is for the UI search bar, which we are removing, but we keep the endpoint for potential future use.
     return kb_indexer.search(query)
 
 @app.get("/api/kb/files", response_model=List[Dict])
@@ -276,15 +289,16 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 history = json.load(f)
 
         try:
+            # Load the new nested configuration
             config = load_config()
 
+            # Configure the Executor agent (Gemini)
             model_kwargs = {
-                'model_name': config.model_name,
-                # Updated toolset for the agent
+                'model_name': config.executor.model_name,
                 'tools': [analyze_document, search_knowledge_base]
             }
-            if config.system_prompt and config.system_prompt.strip():
-                model_kwargs['system_instruction'] = config.system_prompt
+            if config.executor.system_prompt and config.executor.system_prompt.strip():
+                model_kwargs['system_instruction'] = config.executor.system_prompt
             
             model = genai.GenerativeModel(**model_kwargs)
             
@@ -296,7 +310,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             chat_session = model.start_chat(history=cleaned_history)
             
             initial_prompt = request.message
-            # Updated context injection to guide the new `analyze_document` tool
             if request.file_id:
                 initial_prompt += f"\n\n[ИНСТРУКЦИЯ ДЛЯ АГЕНТА]\nПользователь сфокусирован на конкретном файле. Его ID: '{request.file_id}'. Для ответа на вопрос пользователя, ты ДОЛЖЕН использовать инструмент `analyze_document`. Передай этот ID в аргумент `file_id` и извлеки поисковый запрос пользователя из его сообщения для аргумента `query`."
             
@@ -321,7 +334,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
                     tool_result = ""
-                    # Updated tool-calling logic
                     if fc.name == 'analyze_document':
                         file_id_arg = fc.args.get('file_id')
                         query_arg = fc.args.get('query')
