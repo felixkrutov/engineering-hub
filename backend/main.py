@@ -5,6 +5,7 @@ import uuid
 import asyncio
 from datetime import datetime
 import google.generativeai as genai
+import google.generativeai.protos as gap
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -266,7 +267,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             
             initial_prompt = request.message
             if request.file_id:
-                initial_prompt += f"\n\n[Контекст файла: для анализа файла используй инструмент get_document_content с file_id='{request.file_id}']"
+                initial_prompt += f"\n\n[ВАЖНЫЙ КОНТЕКСТ ФАЙЛА]\nТы должен проанализировать файл с ID: '{request.file_id}'.\nЧтобы получить его содержимое, вызови инструмент `get_document_content`. Передай ему ID файла '{request.file_id}' в аргумент `file_id` В ТОЧНОСТИ как он указан здесь, без изменений.\nПример правильного вызова: `get_document_content(file_id='{request.file_id}')`"
             
             step_data = {'type': 'thought', 'content': 'Отправляю запрос модели...'}
             steps_history.append(step_data)
@@ -295,7 +296,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
                     response = await chat_session.send_message_async(
-                        genai.Part(function_response=genai.FunctionResponse(
+                        gap.Part(function_response=gap.FunctionResponse(
                             name=fc.name,
                             response={"content": tool_result}
                         ))
