@@ -46,6 +46,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # --- Agent Tools Definition ---
 def get_document_content(file_id: str) -> str:
+    """Gets the full text content of a single document given its unique file_id."""
     logger.info(f"TOOL CALL: get_document_content for file_id: {file_id}")
     try:
         file_info = kb_indexer.get_file_by_id(file_id)
@@ -61,6 +62,21 @@ def get_document_content(file_id: str) -> str:
     except Exception as e:
         logger.error(f"Error in get_document_content tool for file_id {file_id}: {e}", exc_info=True)
         return f"ОШИБКА: Произошла внутренняя ошибка при обработке файла: {e}"
+
+def search_knowledge_base(query: str) -> str:
+    """Searches the knowledge base for relevant information based on a query."""
+    logger.info(f"TOOL CALL: search_knowledge_base with query: '{query}'")
+    results = kb_indexer.search(query)
+    if not results:
+        return "По вашему запросу в базе знаний ничего не найдено."
+    
+    formatted_results = []
+    for i, chunk in enumerate(results):
+        formatted_results.append(
+            f"--- Результат поиска №{i+1} (из файла: {chunk['file_name']}) ---\n"
+            f"{chunk['text']}\n"
+        )
+    return "\n".join(formatted_results)
 
 
 app = FastAPI()
@@ -251,7 +267,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
             model_kwargs = {
                 'model_name': config.model_name,
-                'tools': [get_document_content]
+                'tools': [get_document_content, search_knowledge_base]
             }
             if config.system_prompt and config.system_prompt.strip():
                 model_kwargs['system_instruction'] = config.system_prompt
@@ -289,7 +305,23 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    tool_result = get_document_content(file_id=fc.args['file_id']) if fc.name == 'get_document_content' else f"Ошибка: Неизвестный инструмент '{fc.name}'."
+                    tool_result = ""
+                    if fc.name == 'get_document_content':
+                        # Ensure 'file_id' exists in args to prevent errors
+                        file_id_arg = fc.args.get('file_id')
+                        if file_id_arg:
+                            tool_result = get_document_content(file_id=file_id_arg)
+                        else:
+                            tool_result = "Ошибка: для вызова get_document_content требуется 'file_id'."
+                    elif fc.name == 'search_knowledge_base':
+                        # Ensure 'query' exists in args
+                        query_arg = fc.args.get('query')
+                        if query_arg:
+                            tool_result = search_knowledge_base(query=query_arg)
+                        else:
+                            tool_result = "Ошибка: для вызова search_knowledge_base требуется 'query'."
+                    else:
+                        tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
 
                     step_data = {'type': 'tool_result', 'content': tool_result}
                     steps_history.append(step_data)
