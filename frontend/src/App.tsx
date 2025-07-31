@@ -86,7 +86,6 @@ function App() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const userInputRef = useRef<HTMLTextAreaElement>(null);
 
-  // When modal opens, copy saved config to dirty config for editing
   useEffect(() => {
     if (isSettingsModalOpen && config) {
         setDirtyConfig(JSON.parse(JSON.stringify(config))); // Deep copy
@@ -115,20 +114,19 @@ function App() {
     }
   }, [isSettingsModalOpen, activeSettingsTab]);
 
-  // Updated to load nested config
   const loadConfig = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/v1/config`);
       if (!response.ok) throw new Error('Failed to load config');
       const data: AppConfig = await response.json();
       setConfig(data);
-      setDirtyConfig(JSON.parse(JSON.stringify(data))); // Deep copy for editing
+      setDirtyConfig(JSON.parse(JSON.stringify(data)));
     } catch (error) {
       console.error("Could not load config:", error);
     }
   };
 
-  // Updated to save nested config
+  // --- INSTRUCTION: Fixed handleSaveSettings function ---
   const handleSaveSettings = async () => {
     if (!dirtyConfig) return;
     setIsSaving(true);
@@ -136,10 +134,12 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/v1/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // This is the CRITICAL fix: send the entire nested dirtyConfig object
         body: JSON.stringify(dirtyConfig),
       });
       if (!response.ok) throw new Error('Failed to save settings');
-      setConfig(JSON.parse(JSON.stringify(dirtyConfig))); // Update saved state
+      // On success, update the "saved" config state with the new values
+      setConfig(JSON.parse(JSON.stringify(dirtyConfig)));
     } catch(error) {
       console.error("Save settings failed:", error);
     } finally {
@@ -327,140 +327,134 @@ function App() {
   useEffect(adjustTextareaHeight, [userInput]);
 
   const handleThemeToggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
-  // Updated logic to check for changes in nested config
   const hasChanges = config && dirtyConfig ? JSON.stringify(config) !== JSON.stringify(dirtyConfig) : false;
 
   return (
     <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
         {sidebarCollapsed && (<button className="sidebar-reopen-btn" onClick={() => setSidebarCollapsed(false)}><FaBars /></button>)}
-
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <button className="new-chat-btn" onClick={startNewChat}><i className="bi bi-plus-lg"></i> Новый чат</button>
-          <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}><FaTimes /></button>
-        </div>
-        <ul className="chat-list">
-            {chats.map(chat => (
-                <li key={chat.id} className={`chat-list-item ${chat.id === currentChatId ? 'active' : ''}`} onClick={() => selectChat(chat.id)}>
-                    <span className="chat-title">{chat.title}</span>
-                    <div className="chat-actions">
-                        <button title="Переименовать" onClick={(e) => { e.stopPropagation(); handleRenameChat(chat.id, chat.title); }}><FaPencilAlt /></button>
-                        <button title="Удалить" onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}><FaTrashAlt /></button>
-                    </div>
-                </li>
-            ))}
-        </ul>
-        <div className="sidebar-footer">
-          <div className="user-info">
-            <div className="user-icon">{user.username[0].toUpperCase()}</div>
-            <span>{user.username}</span>
+        <aside className="sidebar">
+          <div className="sidebar-header">
+            <button className="new-chat-btn" onClick={startNewChat}><i className="bi bi-plus-lg"></i> Новый чат</button>
+            <button className="hide-sidebar-btn" onClick={() => setSidebarCollapsed(true)}><FaTimes /></button>
           </div>
-          <div>
-            <button className="theme-toggle-btn" title="Сменить тему" onClick={handleThemeToggle}>{theme === 'dark' ? <FaSun /> : <FaMoon />}</button>
-            <button className="settings-btn" title="Настройки" onClick={() => setIsSettingsModalOpen(true)}><FaCog /></button>
-          </div>
-        </div>
-      </aside>
-
-      <main className="main-content">
-        <div className="chat-area">
-          <div className="chat-container" ref={chatContainerRef}>
-            {messages.length === 0 ? (
-                <div className="welcome-screen"><h1>Mossa AI</h1><p>Начните новый диалог или выберите существующий</p></div>
-            ) : (
-                messages.map(msg => (
-                    <div key={msg.id} className={`message-block ${msg.role} ${msg.content.length > 0 && msg.content === msg.displayedContent ? 'done' : ''}`}>
-                        <div className="message-content">
-                            {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} defaultCollapsed={true} />}
-                            <p className="content">{msg.displayedContent}</p>
-                            {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} defaultCollapsed={false} isFinalizing={isFinalizing === msg.id} />}
-                        </div>
-                    </div>
-                ))
-            )}
-          </div>
-          <div className="input-area-wrapper">
-            <div className="input-area">
-              <textarea
-                ref={userInputRef} className="user-input" placeholder="Спросите что-нибудь..." rows={1}
-                value={userInput} onChange={(e) => setUserInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}}
-              />
-              <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
-                {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
-              </button>
+          <ul className="chat-list">
+              {chats.map(chat => (
+                  <li key={chat.id} className={`chat-list-item ${chat.id === currentChatId ? 'active' : ''}`} onClick={() => selectChat(chat.id)}>
+                      <span className="chat-title">{chat.title}</span>
+                      <div className="chat-actions">
+                          <button title="Переименовать" onClick={(e) => { e.stopPropagation(); handleRenameChat(chat.id, chat.title); }}><FaPencilAlt /></button>
+                          <button title="Удалить" onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}><FaTrashAlt /></button>
+                      </div>
+                  </li>
+              ))}
+          </ul>
+          <div className="sidebar-footer">
+            <div className="user-info">
+              <div className="user-icon">{user.username[0].toUpperCase()}</div>
+              <span>{user.username}</span>
+            </div>
+            <div>
+              <button className="theme-toggle-btn" title="Сменить тему" onClick={handleThemeToggle}>{theme === 'dark' ? <FaSun /> : <FaMoon />}</button>
+              <button className="settings-btn" title="Настройки" onClick={() => setIsSettingsModalOpen(true)}><FaCog /></button>
             </div>
           </div>
-        </div>
-      </main>
-
-      {modalState.visible && (
-        <div className={`modal-overlay visible`} onClick={() => modalState.onConfirm(null)}>
-            <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-                <h3>{modalState.title}</h3><p>{modalState.message}</p>
-                {modalState.showInput && (<input type="text" className="modal-input" value={modalState.inputValue} onChange={(e) => setModalState(prev => ({...prev, inputValue: e.target.value }))} autoFocus />)}
-                <div className="modal-actions">
-                    <button className="modal-btn-cancel" onClick={() => modalState.onConfirm(null)}>Отмена</button>
-                    <button className="modal-btn-confirm" onClick={() => modalState.onConfirm(modalState.showInput ? modalState.inputValue : true)}>{modalState.confirmText}</button>
+        </aside>
+        <main className="main-content">
+          <div className="chat-area">
+            <div className="chat-container" ref={chatContainerRef}>
+              {messages.length === 0 ? (
+                  <div className="welcome-screen"><h1>Mossa AI</h1><p>Начните новый диалог или выберите существующий</p></div>
+              ) : (
+                  messages.map(msg => (
+                      <div key={msg.id} className={`message-block ${msg.role} ${msg.content.length > 0 && msg.content === msg.displayedContent ? 'done' : ''}`}>
+                          <div className="message-content">
+                              {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} defaultCollapsed={true} />}
+                              <p className="content">{msg.displayedContent}</p>
+                              {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} defaultCollapsed={false} isFinalizing={isFinalizing === msg.id} />}
+                          </div>
+                      </div>
+                  ))
+              )}
+            </div>
+            <div className="input-area-wrapper">
+              <div className="input-area">
+                <textarea
+                  ref={userInputRef} className="user-input" placeholder="Спросите что-нибудь..." rows={1}
+                  value={userInput} onChange={(e) => setUserInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}}
+                />
+                <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
+                  {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
+                </button>
+              </div>
+            </div>
+          </div>
+        </main>
+        {modalState.visible && (
+          <div className={`modal-overlay visible`} onClick={() => modalState.onConfirm(null)}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+                  <h3>{modalState.title}</h3><p>{modalState.message}</p>
+                  {modalState.showInput && (<input type="text" className="modal-input" value={modalState.inputValue} onChange={(e) => setModalState(prev => ({...prev, inputValue: e.target.value }))} autoFocus />)}
+                  <div className="modal-actions">
+                      <button className="modal-btn-cancel" onClick={() => modalState.onConfirm(null)}>Отмена</button>
+                      <button className="modal-btn-confirm" onClick={() => modalState.onConfirm(modalState.showInput ? modalState.inputValue : true)}>{modalState.confirmText}</button>
+                  </div>
+              </div>
+          </div>
+        )}
+        {isSettingsModalOpen && (
+          <div className="modal-overlay visible">
+            <div className="modal-box settings-modal">
+              <div className="modal-header"><h2>Настройки</h2><button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)}>×</button></div>
+              <div className="modal-content">
+                <div className="tabs">
+                  <button className={`tab-btn ${activeSettingsTab === 'ai' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('ai')}>Настройки ИИ</button>
+                  <button className={`tab-btn ${activeSettingsTab === 'db' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('db')}>База Знаний</button>
                 </div>
-            </div>
-        </div>
-      )}
-
-      {isSettingsModalOpen && (
-        <div className="modal-overlay visible">
-          <div className="modal-box settings-modal">
-            <div className="modal-header"><h2>Настройки</h2><button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)}>×</button></div>
-            <div className="modal-content">
-              <div className="tabs">
-                <button className={`tab-btn ${activeSettingsTab === 'ai' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('ai')}>Настройки ИИ</button>
-                <button className={`tab-btn ${activeSettingsTab === 'db' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('db')}>База Знаний</button>
-              </div>
-              <div className="tab-content">
-                {/* --- Overhauled AI Settings Tab --- */}
-                {activeSettingsTab === 'ai' && dirtyConfig && (
-                  <div className="ai-settings">
-                    <div className="settings-group">
-                      <h4>Агент-Исполнитель (Gemini)</h4>
-                      <label htmlFor="executor-model-name">Модель</label>
-                      <input id="executor-model-name" type="text" value={dirtyConfig.executor.model_name} onChange={(e) => setDirtyConfig({...dirtyConfig, executor: {...dirtyConfig.executor, model_name: e.target.value}})} />
-                      <label htmlFor="executor-system-prompt">Системный промпт</label>
-                      <textarea id="executor-system-prompt" rows={6} value={dirtyConfig.executor.system_prompt} onChange={(e) => setDirtyConfig({...dirtyConfig, executor: {...dirtyConfig.executor, system_prompt: e.target.value}})} />
+                <div className="tab-content">
+                  {activeSettingsTab === 'ai' && dirtyConfig && (
+                    <div className="ai-settings">
+                      <div className="settings-group">
+                        <h4>Агент-Исполнитель (Gemini)</h4>
+                        <label htmlFor="executor-model-name">Модель</label>
+                        <input id="executor-model-name" type="text" value={dirtyConfig.executor.model_name} onChange={(e) => setDirtyConfig({...dirtyConfig, executor: {...dirtyConfig.executor, model_name: e.target.value}})} />
+                        <label htmlFor="executor-system-prompt">Системный промпт</label>
+                        <textarea id="executor-system-prompt" rows={6} value={dirtyConfig.executor.system_prompt} onChange={(e) => setDirtyConfig({...dirtyConfig, executor: {...dirtyConfig.executor, system_prompt: e.target.value}})} />
+                      </div>
+                      <div className="settings-group">
+                        <h4>Агент-Контролёр (OpenAI / OpenRouter)</h4>
+                        <label htmlFor="controller-model-name">Модель</label>
+                        <input id="controller-model-name" type="text" value={dirtyConfig.controller.model_name} onChange={(e) => setDirtyConfig({...dirtyConfig, controller: {...dirtyConfig.controller, model_name: e.target.value}})} />
+                        <label htmlFor="controller-system-prompt">Системный промпт</label>
+                        <textarea id="controller-system-prompt" rows={6} value={dirtyConfig.controller.system_prompt} onChange={(e) => setDirtyConfig({...dirtyConfig, controller: {...dirtyConfig.controller, system_prompt: e.target.value}})} />
+                      </div>
                     </div>
-                    <div className="settings-group">
-                      <h4>Агент-Контролёр (OpenAI / OpenRouter)</h4>
-                      <label htmlFor="controller-model-name">Модель</label>
-                      <input id="controller-model-name" type="text" value={dirtyConfig.controller.model_name} onChange={(e) => setDirtyConfig({...dirtyConfig, controller: {...dirtyConfig.controller, model_name: e.target.value}})} />
-                      <label htmlFor="controller-system-prompt">Системный промпт</label>
-                      <textarea id="controller-system-prompt" rows={6} value={dirtyConfig.controller.system_prompt} onChange={(e) => setDirtyConfig({...dirtyConfig, controller: {...dirtyConfig.controller, system_prompt: e.target.value}})} />
+                  )}
+                  {activeSettingsTab === 'db' && (
+                    <div className="db-settings file-manager">
+                      {kbFilesError && <p className="error-message">{kbFilesError}</p>}
+                      {isKbFilesLoading ? (<div className="spinner-container"><ClipLoader color="#888" size={30} /></div>) : (
+                        kbFiles.length > 0 ? (
+                          <div className="kb-file-list-container">
+                            <ul className="kb-file-list">
+                              {kbFiles.map((file) => (
+                                <li key={file.id} className="kb-file-item">
+                                  <span className="kb-file-name">{file.name}</span>
+                                  <button className="modal-btn-confirm kb-use-btn" onClick={() => handleUseFile(file.id, file.name)}>Использовать</button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : (<p>Файлы в базе знаний не найдены.</p>)
+                      )}
                     </div>
-                  </div>
-                )}
-                {activeSettingsTab === 'db' && (
-                  <div className="db-settings file-manager">
-                    {kbFilesError && <p className="error-message">{kbFilesError}</p>}
-                    {isKbFilesLoading ? (<div className="spinner-container"><ClipLoader color="#888" size={30} /></div>) : (
-                      kbFiles.length > 0 ? (
-                        <div className="kb-file-list-container">
-                          <ul className="kb-file-list">
-                            {kbFiles.map((file) => (
-                              <li key={file.id} className="kb-file-item">
-                                <span className="kb-file-name">{file.name}</span>
-                                <button className="modal-btn-confirm kb-use-btn" onClick={() => handleUseFile(file.id, file.name)}>Использовать</button>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : (<p>Файлы в базе знаний не найдены.</p>)
-                    )}
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
+              <div className="modal-footer"><button className={`modal-btn-confirm ${!hasChanges || isSaving ? 'disabled' : ''}`} onClick={handleSaveSettings} disabled={!hasChanges || isSaving}>{isSaving ? <ClipLoader color="#ffffff" size={16} /> : 'Сохранить'}</button></div>
             </div>
-            <div className="modal-footer"><button className={`modal-btn-confirm ${!hasChanges || isSaving ? 'disabled' : ''}`} onClick={handleSaveSettings} disabled={!hasChanges || isSaving}>{isSaving ? <ClipLoader color="#ffffff" size={16} /> : 'Сохранить'}</button></div>
           </div>
-        </div>
-      )}
+        )}
     </div>
   );
 }
