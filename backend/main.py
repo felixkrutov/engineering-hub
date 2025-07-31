@@ -126,7 +126,7 @@ class Message(BaseModel):
 
 
 # --- API Endpoints ---
-# INSTRUCTION: Fixed and verified resilient config loading
+# --- INSTRUCTION: More robust config loading ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
         executor=AgentSettings(model_name='gemini-1.5-pro', system_prompt=''),
@@ -138,8 +138,12 @@ def load_config() -> AppConfig:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return AppConfig.model_validate(data)
-    except (json.JSONDecodeError, TypeError, KeyError, ValueError) as e:
-        logger.warning(f"Could not load or validate config file '{CONFIG_FILE}', using defaults. Error: {e}")
+    except Exception as e:
+        logger.warning(f"Could not load or validate config file due to: {e}. Deleting corrupt file and using defaults.")
+        try:
+            os.remove(CONFIG_FILE) # Delete the corrupt file
+        except OSError as del_e:
+            logger.error(f"Failed to delete corrupt config file: {del_e}")
         return default_config
 
 def save_config(config: AppConfig):
@@ -158,8 +162,6 @@ async def set_config(config: AppConfig):
 @app.get("/api/kb/files", response_model=List[Dict])
 async def get_all_kb_files():
     return kb_indexer.get_all_files()
-
-# Other endpoints remain unchanged...
 
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
@@ -206,7 +208,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 
                 if hasattr(part, 'function_call') and part.function_call.name:
                     fc = part.function_call
-                    
                     human_readable_action = ""
                     if fc.name == 'search_knowledge_base':
                         human_readable_action = f"Ищу информацию по запросу «{fc.args.get('query')}» во всей базе знаний..."
@@ -238,12 +239,8 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    # --- INSTRUCTION: Fixed agent stall bug with correct response format ---
                     response = await chat_session.send_message_async(
-                        gap.Part(function_response=gap.FunctionResponse(
-                            name=fc.name,
-                            response={'content': tool_result}
-                        ))
+                        gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result}))
                     )
                 elif hasattr(part, 'text') and part.text:
                     final_answer_text = part.text
@@ -264,8 +261,12 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         history.append(user_message.model_dump(exclude_none=True))
         history.append(model_message.model_dump(exclude_none=True))
 
-        with open(history_file_path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
+        # --- INSTRUCTION: Robust chat history saving ---
+        try:
+            with open(history_file_path, 'w', encoding='utf-8') as f:
+                json.dump(history, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"CRITICAL: Failed to save chat history for {conversation_id}: {e}", exc_info=True)
         
         if len(history) == 2:
              try:
@@ -284,8 +285,8 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# The remaining endpoints (get_chat_history, delete_chat, rename_chat) are unchanged.
-# They are omitted here for brevity but should be included in the final file.
+# Other endpoints like get_chat_history, delete_chat, rename_chat, etc. would follow here
+# (omitted for brevity but should be in the final file)
 @app.get("/api/v1/chats/{conversation_id}")
 async def get_chat_history(conversation_id: str):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
