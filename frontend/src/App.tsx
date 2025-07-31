@@ -35,10 +35,10 @@ interface ModalState {
   onConfirm: (value: string | boolean | null) => void;
 }
 
-interface KnowledgeBaseChunk {
-  text: string;
-  file_name: string;
-  file_id: string;
+// New interface for files from the knowledge base
+interface KnowledgeBaseFile {
+  id: string;
+  name: string;
 }
 
 const user = { username: 'Engineer', theme: 'dark' };
@@ -61,10 +61,10 @@ function App() {
   const [savedSystemPrompt, setSavedSystemPrompt] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   
-  const [kbSearchQuery, setKbSearchQuery] = useState('');
-  const [kbSearchResults, setKbSearchResults] = useState<KnowledgeBaseChunk[]>([]);
-  const [isKbSearching, setIsKbSearching] = useState(false);
-  const [kbError, setKbError] = useState<string | null>(null);
+  // State for the new file manager
+  const [kbFiles, setKbFiles] = useState<KnowledgeBaseFile[]>([]);
+  const [isKbFilesLoading, setIsKbFilesLoading] = useState(false);
+  const [kbFilesError, setKbFilesError] = useState<string | null>(null);
 
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[] | null>(null);
@@ -90,6 +90,31 @@ function App() {
         setDirtySystemPrompt(savedSystemPrompt);
     }
   }, [isSettingsModalOpen, savedModelName, savedSystemPrompt]);
+
+  // Effect to load files when the "База данных" tab is active
+  useEffect(() => {
+    const fetchFiles = async () => {
+      setIsKbFilesLoading(true);
+      setKbFilesError(null);
+      try {
+        const response = await fetch(`${API_BASE_URL}/kb/files`);
+        if (!response.ok) throw new Error('Failed to fetch file list');
+        const data = await response.json();
+        // Assuming the backend returns an array of objects with 'id' and 'name'
+        setKbFiles(data.map((file: any) => ({ id: file.id, name: file.name })));
+      } catch (error) {
+        console.error("Failed to fetch KB files:", error);
+        setKbFilesError("Не удалось загрузить список файлов.");
+      } finally {
+        setIsKbFilesLoading(false);
+      }
+    };
+
+    if (isSettingsModalOpen && activeSettingsTab === 'db') {
+      fetchFiles();
+    }
+  }, [isSettingsModalOpen, activeSettingsTab]);
+
 
   const loadConfig = async () => {
     try {
@@ -126,32 +151,10 @@ function App() {
     }
   };
 
-  const handleKbSearch = async () => {
-    console.info('Initiating KB search for query:', kbSearchQuery);
-    setIsKbSearching(true);
-    setKbError(null);
-    try {
-      const url = `${API_BASE_URL}/kb/search?query=${encodeURIComponent(kbSearchQuery)}`;
-      console.log('Fetching from URL:', url);
-      const response = await fetch(url);
-      if (!response.ok) {
-        console.error('KB search failed with status:', response.status);
-        throw new Error('Search request failed');
-      }
-      const data = await response.json();
-      console.info('KB search successful. Found items:', data);
-      setKbSearchResults(data);
-    } catch (error)      {
-      console.error('An error occurred during KB search:', error);
-      setKbError('Не удалось выполнить поиск. Проверьте консоль для деталей.');
-    } finally {
-      setIsKbSearching(false);
-    }
-  };
-  
+  // Updated handleUseFile to set a prompt template and activeFileId
   const handleUseFile = (fileId: string, fileName: string) => {
     setActiveFileId(fileId);
-    setUserInput(`Проанализируй файл '${fileName}' и ответь на мой вопрос.`);
+    setUserInput(`Проанализируй файл "${fileName}" по запросу: `);
     setIsSettingsModalOpen(false);
     userInputRef.current?.focus();
   };
@@ -194,6 +197,7 @@ function App() {
   const startNewChat = () => {
     setCurrentChatId(null);
     setMessages([]);
+    setActiveFileId(null); // Ensure active file is cleared for a new chat
   };
   
   const handleRenameChat = async (chatId: string, currentTitle: string) => {
@@ -272,7 +276,7 @@ function App() {
         body: JSON.stringify({
           message: messageText,
           conversation_id: conversationId,
-          file_id: activeFileId,
+          file_id: activeFileId, // Pass the active file ID to the backend
         }),
       });
       setActiveFileId(null); // Reset after sending
@@ -465,7 +469,7 @@ function App() {
             <div className="modal-content">
               <div className="tabs">
                 <button className={`tab-btn ${activeSettingsTab === 'ai' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('ai')}>Настройки ИИ</button>
-                <button className={`tab-btn ${activeSettingsTab === 'db' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('db')}>База данных</button>
+                <button className={`tab-btn ${activeSettingsTab === 'db' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('db')}>База Знаний</button>
               </div>
               <div className="tab-content">
                 {activeSettingsTab === 'ai' && (
@@ -475,31 +479,22 @@ function App() {
                   </div>
                 )}
                 {activeSettingsTab === 'db' && (
-                  <div className="db-settings">
-                    <div className="kb-search-bar">
-                      <input type="text" placeholder="Поиск по документам..." value={kbSearchQuery} onChange={(e) => setKbSearchQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleKbSearch(); }} />
-                      <button onClick={handleKbSearch} disabled={isKbSearching || !kbSearchQuery.trim()}>{isKbSearching ? <ClipLoader color="#333" size={16} /> : 'Найти'}</button>
-                    </div>
-                    <div className="kb-search-results">
-                      {kbError && <p className="error-message">{kbError}</p>}
-                      {isKbSearching ? (<div className="spinner-container"><ClipLoader color="#888" size={30} /></div>) : (
-                        kbSearchResults.length > 0 ? (
-                          <ul className="kb-chunk-list">
-                            {kbSearchResults.map((chunk, index) => (
-                              <li key={`${chunk.file_id}-${index}`} className="kb-chunk-item">
-                                <div className="kb-chunk-details">
-                                  <p className="kb-chunk-text">"...{chunk.text.substring(0, 150)}..."</p>
-                                  <p className="kb-chunk-source">Источник: {chunk.file_name}</p>
-                                </div>
-                                <button className="kb-chunk-use-btn" onClick={() => handleUseFile(chunk.file_id, chunk.file_name)}>
-                                  Использовать
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (<p>Результаты поиска появятся здесь.</p>)
-                      )}
-                    </div>
+                  <div className="db-settings file-manager">
+                    {kbFilesError && <p className="error-message">{kbFilesError}</p>}
+                    {isKbFilesLoading ? (<div className="spinner-container"><ClipLoader color="#888" size={30} /></div>) : (
+                      kbFiles.length > 0 ? (
+                        <ul className="kb-file-list">
+                          {kbFiles.map((file) => (
+                            <li key={file.id} className="kb-file-item">
+                              <span className="kb-file-name">{file.name}</span>
+                              <button className="kb-file-use-btn" onClick={() => handleUseFile(file.id, file.name)}>
+                                Использовать
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (<p>Файлы в базе знаний не найдены.</p>)
+                    )}
                   </div>
                 )}
               </div>
