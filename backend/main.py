@@ -2,6 +2,7 @@ import logging
 import os
 import json
 import uuid
+import re  # <-- ADDED IMPORT
 import asyncio
 from datetime import datetime
 import google.generativeai as genai
@@ -109,11 +110,9 @@ app.add_middleware(
 
 HISTORY_DIR = "chat_histories"
 CONFIG_FILE = "config.json"
-# Default prompt for the controller agent, used if no config file is found.
 CONTROLLER_SYSTEM_PROMPT = "You are a helpful assistant."
 
 # --- Pydantic Models ---
-# New nested structure for agent settings
 class AgentSettings(BaseModel):
     model_name: str
     system_prompt: str
@@ -145,7 +144,6 @@ class Message(BaseModel):
 
 
 # --- API Endpoints ---
-# Updated to handle new nested structure and provide robust defaults
 def load_config() -> AppConfig:
     default_config = AppConfig(
         executor=AgentSettings(model_name='gemini-1.5-pro', system_prompt=''),
@@ -156,7 +154,6 @@ def load_config() -> AppConfig:
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # Validate against the model, filling in any missing fields with defaults.
             return AppConfig.model_validate(data)
     except (json.JSONDecodeError, TypeError, KeyError, ValueError) as e:
         logger.warning(f"Could not load or validate config file, using defaults. Error: {e}")
@@ -181,7 +178,6 @@ async def search_kb(query: str) -> List[Dict[str, str]]:
 
 @app.get("/api/kb/files", response_model=List[Dict])
 async def get_all_kb_files():
-    """Returns a list of all files in the knowledge base."""
     return kb_indexer.get_all_files()
 
 @app.get("/api/kb/file/{file_id:path}")
@@ -228,17 +224,12 @@ async def get_chat_history(conversation_id: str):
     try:
         with open(history_file_path, 'r', encoding='utf-8') as f:
             history_data = json.load(f)
-
         formatted_history = []
         for item in history_data:
-            message_data = {
-                "role": item.get("role"),
-                "content": item.get("parts", [""])[0] 
-            }
+            message_data = {"role": item.get("role"), "content": item.get("parts", [""])[0] }
             if 'thinking_steps' in item and item['thinking_steps']:
                 message_data['thinking_steps'] = item['thinking_steps']
             formatted_history.append(message_data)
-
         return formatted_history
     except (json.JSONDecodeError, FileNotFoundError):
         raise HTTPException(status_code=500, detail="Could not read or parse chat history file.")
@@ -289,10 +280,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 history = json.load(f)
 
         try:
-            # Load the new nested configuration
             config = load_config()
-
-            # Configure the Executor agent (Gemini)
             model_kwargs = {
                 'model_name': config.executor.model_name,
                 'tools': [analyze_document, search_knowledge_base]
@@ -301,19 +289,13 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 model_kwargs['system_instruction'] = config.executor.system_prompt
             
             model = genai.GenerativeModel(**model_kwargs)
-            
-            cleaned_history = [
-                {"role": msg["role"], "parts": msg["parts"]}
-                for msg in history
-            ]
-            
+            cleaned_history = [{"role": msg["role"], "parts": msg["parts"]} for msg in history]
             chat_session = model.start_chat(history=cleaned_history)
-            
             initial_prompt = request.message
             if request.file_id:
                 initial_prompt += f"\n\n[ИНСТРУКЦИЯ ДЛЯ АГЕНТА]\nПользователь сфокусирован на конкретном файле. Его ID: '{request.file_id}'. Для ответа на вопрос пользователя, ты ДОЛЖЕН использовать инструмент `analyze_document`. Передай этот ID в аргумент `file_id` и извлеки поисковый запрос пользователя из его сообщения для аргумента `query`."
             
-            step_data = {'type': 'thought', 'content': 'Отправляю запрос модели...'}
+            step_data = {'type': 'thought', 'content': 'Обдумываю ваш запрос...'}
             steps_history.append(step_data)
             yield f"data: {json.dumps(step_data)}\n\n"
             
@@ -329,36 +311,48 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 if hasattr(part, 'function_call') and part.function_call.name:
                     fc = part.function_call
                     
-                    step_data = {'type': 'thought', 'content': f"Модель решила вызвать инструмент `{fc.name}` с аргументами: {dict(fc.args)}"}
-                    steps_history.append(step_data)
-                    yield f"data: {json.dumps(step_data)}\n\n"
+                    # --- INSTRUCTION 2: Humanize Action Descriptions ---
+                    human_readable_action = ""
+                    if fc.name == 'search_knowledge_base':
+                        query_arg = fc.args.get('query', '...')
+                        human_readable_action = f"Ищу информацию по запросу «{query_arg}» во всей базе знаний..."
+                    elif fc.name == 'analyze_document':
+                        file_id_arg = fc.args.get('file_id')
+                        query_arg = fc.args.get('query', '...')
+                        file_info = kb_indexer.get_file_by_id(file_id_arg)
+                        file_name = file_info['name'] if file_info else file_id_arg
+                        human_readable_action = f"Анализирую содержимое файла «{file_name}» по запросу «{query_arg}»..."
+
+                    if human_readable_action:
+                        step_data = {'type': 'thought', 'content': human_readable_action}
+                        steps_history.append(step_data)
+                        yield f"data: {json.dumps(step_data)}\n\n"
                     
                     tool_result = ""
                     if fc.name == 'analyze_document':
-                        file_id_arg = fc.args.get('file_id')
-                        query_arg = fc.args.get('query')
-                        if file_id_arg and query_arg:
-                            tool_result = analyze_document(file_id=file_id_arg, query=query_arg)
-                        else:
-                            tool_result = "Ошибка: для вызова analyze_document требуются 'file_id' и 'query'."
+                        tool_result = analyze_document(file_id=fc.args.get('file_id'), query=fc.args.get('query'))
                     elif fc.name == 'search_knowledge_base':
-                        query_arg = fc.args.get('query')
-                        if query_arg:
-                            tool_result = search_knowledge_base(query=query_arg)
-                        else:
-                            tool_result = "Ошибка: для вызова search_knowledge_base требуется 'query'."
+                        tool_result = search_knowledge_base(query=fc.args.get('query'))
                     else:
                         tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
 
-                    step_data = {'type': 'tool_result', 'content': tool_result}
+                    # --- INSTRUCTION 1: Summarize, Don't Dump, Tool Results ---
+                    summary_content = ""
+                    if "ОШИБКА:" in tool_result or "ничего не найдено" in tool_result:
+                        summary_content = "В базе знаний не найдено релевантной информации."
+                    else:
+                        source_files = list(set(re.findall(r"\(из файла: (.*?)\)", tool_result)))
+                        if source_files:
+                            summary_content = f"Найдена релевантная информация в следующих документах: {', '.join(source_files)}."
+                        else:
+                            summary_content = "Найдена релевантная информация в базе знаний."
+
+                    step_data = {'type': 'tool_result', 'content': summary_content}
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
                     response = await chat_session.send_message_async(
-                        gap.Part(function_response=gap.FunctionResponse(
-                            name=fc.name,
-                            response={"content": tool_result}
-                        ))
+                        gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={"content": tool_result}))
                     )
                 elif hasattr(part, 'text') and part.text:
                     final_answer_text = part.text
@@ -374,11 +368,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             final_answer_text = "К сожалению, произошла ошибка. Не удалось завершить мыслительный процесс."
         
         user_message = Message(role="user", parts=[request.message])
-        model_message = Message(
-            role="model",
-            parts=[final_answer_text],
-            thinking_steps=[ThinkingStep(**step) for step in steps_history]
-        )
+        model_message = Message(role="model", parts=[final_answer_text], thinking_steps=[ThinkingStep(**step) for step in steps_history])
         
         history.append(user_message.model_dump(exclude_none=True))
         history.append(model_message.model_dump(exclude_none=True))
