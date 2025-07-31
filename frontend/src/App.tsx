@@ -35,6 +35,12 @@ interface ModalState {
   onConfirm: (value: string | boolean | null) => void;
 }
 
+interface KnowledgeBaseChunk {
+  text: string;
+  file_name: string;
+  file_id: string;
+}
+
 const user = { username: 'Engineer', theme: 'dark' };
 
 function App() {
@@ -56,7 +62,7 @@ function App() {
   const [isSaving, setIsSaving] = useState(false);
   
   const [kbSearchQuery, setKbSearchQuery] = useState('');
-  const [kbSearchResults, setKbSearchResults] = useState<any[]>([]);
+  const [kbSearchResults, setKbSearchResults] = useState<KnowledgeBaseChunk[]>([]);
   const [isKbSearching, setIsKbSearching] = useState(false);
   const [kbError, setKbError] = useState<string | null>(null);
 
@@ -477,7 +483,21 @@ function App() {
                     <div className="kb-search-results">
                       {kbError && <p className="error-message">{kbError}</p>}
                       {isKbSearching ? (<div className="spinner-container"><ClipLoader color="#888" size={30} /></div>) : (
-                        kbSearchResults.length > 0 ? (<ul>{kbSearchResults.map((file) => (<li key={file.id}><span>{file.name} (Тип: {file.mime_type})</span><button onClick={() => handleUseFile(file.id, file.name)}>Использовать</button></li>))}</ul>) : (<p>Результаты поиска появятся здесь.</p>)
+                        kbSearchResults.length > 0 ? (
+                          <ul className="kb-chunk-list">
+                            {kbSearchResults.map((chunk, index) => (
+                              <li key={`${chunk.file_id}-${index}`} className="kb-chunk-item">
+                                <div className="kb-chunk-details">
+                                  <p className="kb-chunk-text">"...{chunk.text.substring(0, 150)}..."</p>
+                                  <p className="kb-chunk-source">Источник: {chunk.file_name}</p>
+                                </div>
+                                <button className="kb-chunk-use-btn" onClick={() => handleUseFile(chunk.file_id, chunk.file_name)}>
+                                  Использовать
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (<p>Результаты поиска появятся здесь.</p>)
                       )}
                     </div>
                   </div>
