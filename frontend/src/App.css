@@ -710,3 +710,42 @@ body[data-theme="light"] .app-wrapper,
   content: '';
   animation: none;
 }
+
+/* Styling for the Knowledge Base File List */
+.kb-file-list-container {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.kb-file-list {
+  list-style-type: none; /* Removes the bullet points */
+  padding: 0;
+  margin: 0;
+}
+
+.kb-file-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.kb-file-item:last-child {
+  border-bottom: none;
+}
+
+.kb-file-name {
+  font-size: 0.9rem;
+  color: var(--text-color-primary);
+  margin-right: 16px; /* Space between name and button */
+}
+
+.kb-use-btn {
+  padding: 4px 12px !important; /* Override default padding for a smaller button */
+  font-size: 0.8rem !important;
+  flex-shrink: 0; /* Prevents button from shrinking */
+}
