@@ -5,7 +5,6 @@ import uuid
 import asyncio
 from datetime import datetime
 import google.generativeai as genai
-import google.generativeai.types as types
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -296,7 +295,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
                     response = await chat_session.send_message_async(
-                        types.Part(function_response=types.FunctionResponse(
+                        genai.Part(function_response=genai.FunctionResponse(
                             name=fc.name,
                             response={"content": tool_result}
                         ))
