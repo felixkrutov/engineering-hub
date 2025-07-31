@@ -23,10 +23,13 @@ services:
       - db
     env_file:
       - .env
+    # --- INSTRUCTION: Corrected volumes section ---
     volumes:
-      # Этот volume нужен для разработки, чтобы изменения кода сразу применялись без пересборки.
+      # Этот volume для разработки (live-reload) теперь правильно обрабатывает и
+      # chat_histories, и config.json, которые будут созданы внутри ./backend на хосте.
       - ./backend:/app
-      - ./chat_histories:/app/chat_histories
+      # Некорректная и конфликтующая строка "./chat_histories:/app/chat_histories" была удалена.
+      # Этот volume для мок-данных остается без изменений.
       - ./mock_disk:/app/mock_disk
 
   frontend:
@@ -53,7 +56,6 @@ services:
     depends_on:
       - backend
       - frontend
-    # --- INSTRUCTION: Corrected command with chmod ---
     command: >
       sh -c "
         chmod +x /app/wait-for-it.sh && \
