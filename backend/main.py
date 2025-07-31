@@ -126,7 +126,6 @@ class Message(BaseModel):
 
 
 # --- API Endpoints ---
-# --- INSTRUCTION: More robust config loading ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
         executor=AgentSettings(model_name='gemini-1.5-pro', system_prompt=''),
@@ -141,7 +140,7 @@ def load_config() -> AppConfig:
     except Exception as e:
         logger.warning(f"Could not load or validate config file due to: {e}. Deleting corrupt file and using defaults.")
         try:
-            os.remove(CONFIG_FILE) # Delete the corrupt file
+            os.remove(CONFIG_FILE)
         except OSError as del_e:
             logger.error(f"Failed to delete corrupt config file: {del_e}")
         return default_config
@@ -163,20 +162,57 @@ async def set_config(config: AppConfig):
 async def get_all_kb_files():
     return kb_indexer.get_all_files()
 
+@app.get("/api/v1/chats", response_model=List[ChatInfo])
+async def list_chats():
+    chats = []
+    os.makedirs(HISTORY_DIR, exist_ok=True)
+    for filename in os.listdir(HISTORY_DIR):
+        if filename.endswith(".json"):
+            conversation_id = filename[:-5]
+            title_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
+            title = "Новый чат"
+            if os.path.exists(title_path):
+                with open(title_path, 'r', encoding='utf-8') as f:
+                    title = f.read().strip() or title
+            else:
+                # --- INSTRUCTION: More robust title generation from history ---
+                try:
+                    with open(os.path.join(HISTORY_DIR, filename), 'r', encoding='utf-8') as f:
+                        history = json.load(f)
+                        if history:
+                            first_user_message = next((item for item in history if item.get('role') == 'user'), None)
+                            if first_user_message and first_user_message.get('parts'):
+                               title = first_user_message['parts'][0][:50]
+                except (json.JSONDecodeError, IndexError) as e:
+                    logger.warning(f"Could not generate title for {filename} due to error: {e}")
+                    pass # Keep default title
+            chats.append(ChatInfo(id=conversation_id, title=title))
+    return sorted(chats, key=lambda item: os.path.getmtime(os.path.join(HISTORY_DIR, f"{item.id}.json")), reverse=True)
+
+
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
     async def event_generator():
         steps_history: List[Dict[str, Any]] = []
-        conversation_id = request.conversation_id
-        history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-        os.makedirs(HISTORY_DIR, exist_ok=True)
         final_answer_text = "Произошла ошибка при обработке ответа."
 
+        # --- INSTRUCTION: Robust history file creation and loading ---
+        conversation_id = request.conversation_id
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+
         history = []
-        if os.path.exists(history_file_path):
+        if not os.path.exists(history_file_path):
+            with open(history_file_path, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+        
+        try:
             with open(history_file_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
-
+        except (json.JSONDecodeError, FileNotFoundError):
+            logger.warning(f"Could not read or parse history for {conversation_id}, starting fresh.")
+            history = []
+        
         try:
             config = load_config()
             model_kwargs = {
@@ -189,6 +225,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             model = genai.GenerativeModel(**model_kwargs)
             cleaned_history = [{"role": msg["role"], "parts": msg["parts"]} for msg in history]
             chat_session = model.start_chat(history=cleaned_history)
+            
             initial_prompt = request.message
             if request.file_id:
                 initial_prompt += f"\n\n[ИНСТРУКЦИЯ ДЛЯ АГЕНТА]\nПользователь сфокусирован на конкретном файле. Его ID: '{request.file_id}'. Для ответа на вопрос пользователя, ты ДОЛЖЕН использовать инструмент `analyze_document`. Передай этот ID в аргумент `file_id` и извлеки поисковый запрос пользователя из его сообщения для аргумента `query`."
@@ -261,7 +298,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         history.append(user_message.model_dump(exclude_none=True))
         history.append(model_message.model_dump(exclude_none=True))
 
-        # --- INSTRUCTION: Robust chat history saving ---
         try:
             with open(history_file_path, 'w', encoding='utf-8') as f:
                 json.dump(history, f, indent=2, ensure_ascii=False)
@@ -285,8 +321,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# Other endpoints like get_chat_history, delete_chat, rename_chat, etc. would follow here
-# (omitted for brevity but should be in the final file)
+# The remaining endpoints are unchanged and are included for completeness.
 @app.get("/api/v1/chats/{conversation_id}")
 async def get_chat_history(conversation_id: str):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
