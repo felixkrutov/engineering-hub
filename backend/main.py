@@ -45,26 +45,33 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- Agent Tools Definition ---
-def get_document_content(file_id: str) -> str:
-    """Gets the full text content of a single document given its unique file_id."""
-    logger.info(f"TOOL CALL: get_document_content for file_id: {file_id}")
+def analyze_document(file_id: str, query: str) -> str:
+    """
+    Searches for information *within a single specified document* using a query.
+    Use this when the user asks a question about a specific file they have mentioned.
+    """
+    logger.info(f"TOOL CALL: analyze_document for file_id: {file_id} with query: '{query}'")
     try:
-        file_info = kb_indexer.get_file_by_id(file_id)
-        if not file_info:
-            return f"ОШИБКА: Файл с id '{file_id}' не найден в базе знаний."
+        # Use the indexer's new file-filtered search capability
+        results = kb_indexer.search(query=query, file_id=file_id)
+        if not results:
+            file_info = kb_indexer.get_file_by_id(file_id)
+            file_name = file_info['name'] if file_info else file_id
+            return f"Внутри файла '{file_name}' по вашему запросу '{query}' ничего не найдено."
 
-        file_content = kb_connector.get_file_content(file_id)
-        if not file_content:
-            return f"ОШИБКА: Не удалось получить содержимое файла '{file_info['name']}'."
-        
-        parsed_text = parse_document(file_info['name'], file_content, file_info['mime_type'])
-        return parsed_text
+        formatted_results = []
+        for i, chunk in enumerate(results):
+            formatted_results.append(
+                f"--- Результат поиска №{i+1} (из файла: {chunk['file_name']}) ---\n"
+                f"{chunk['text']}\n"
+            )
+        return "\n".join(formatted_results)
     except Exception as e:
-        logger.error(f"Error in get_document_content tool for file_id {file_id}: {e}", exc_info=True)
-        return f"ОШИБКА: Произошла внутренняя ошибка при обработке файла: {e}"
+        logger.error(f"Error in analyze_document tool for file_id {file_id}: {e}", exc_info=True)
+        return f"ОШИБКА: Произошла внутренняя ошибка при поиске по файлу: {e}"
 
 def search_knowledge_base(query: str) -> str:
-    """Searches the knowledge base for relevant information based on a query."""
+    """Searches the entire knowledge base for relevant information based on a query."""
     logger.info(f"TOOL CALL: search_knowledge_base with query: '{query}'")
     results = kb_indexer.search(query)
     if not results:
@@ -156,7 +163,13 @@ async def set_config(config: AppConfig):
 
 @app.get("/api/kb/search")
 async def search_kb(query: str) -> List[Dict[str, str]]:
+    # This endpoint is for the UI search bar, which we are removing, but we keep the endpoint for potential future use.
     return kb_indexer.search(query)
+
+@app.get("/api/kb/files", response_model=List[Dict])
+async def get_all_kb_files():
+    """Returns a list of all files in the knowledge base."""
+    return kb_indexer.get_all_files()
 
 @app.get("/api/kb/file/{file_id:path}")
 async def get_kb_file(file_id: str) -> StreamingResponse:
@@ -267,7 +280,8 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
             model_kwargs = {
                 'model_name': config.model_name,
-                'tools': [get_document_content, search_knowledge_base]
+                # Updated toolset for the agent
+                'tools': [analyze_document, search_knowledge_base]
             }
             if config.system_prompt and config.system_prompt.strip():
                 model_kwargs['system_instruction'] = config.system_prompt
@@ -282,8 +296,9 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             chat_session = model.start_chat(history=cleaned_history)
             
             initial_prompt = request.message
+            # Updated context injection to guide the new `analyze_document` tool
             if request.file_id:
-                initial_prompt += f"\n\n[ВАЖНЫЙ КОНТЕКСТ ФАЙЛА]\nТы должен проанализировать файл с ID: '{request.file_id}'.\nЧтобы получить его содержимое, вызови инструмент `get_document_content`. Передай ему ID файла '{request.file_id}' в аргумент `file_id` В ТОЧНОСТИ как он указан здесь, без изменений.\nПример правильного вызова: `get_document_content(file_id='{request.file_id}')`"
+                initial_prompt += f"\n\n[ИНСТРУКЦИЯ ДЛЯ АГЕНТА]\nПользователь сфокусирован на конкретном файле. Его ID: '{request.file_id}'. Для ответа на вопрос пользователя, ты ДОЛЖЕН использовать инструмент `analyze_document`. Передай этот ID в аргумент `file_id` и извлеки поисковый запрос пользователя из его сообщения для аргумента `query`."
             
             step_data = {'type': 'thought', 'content': 'Отправляю запрос модели...'}
             steps_history.append(step_data)
@@ -306,15 +321,15 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
                     tool_result = ""
-                    if fc.name == 'get_document_content':
-                        # Ensure 'file_id' exists in args to prevent errors
+                    # Updated tool-calling logic
+                    if fc.name == 'analyze_document':
                         file_id_arg = fc.args.get('file_id')
-                        if file_id_arg:
-                            tool_result = get_document_content(file_id=file_id_arg)
+                        query_arg = fc.args.get('query')
+                        if file_id_arg and query_arg:
+                            tool_result = analyze_document(file_id=file_id_arg, query=query_arg)
                         else:
-                            tool_result = "Ошибка: для вызова get_document_content требуется 'file_id'."
+                            tool_result = "Ошибка: для вызова analyze_document требуются 'file_id' и 'query'."
                     elif fc.name == 'search_knowledge_base':
-                        # Ensure 'query' exists in args
                         query_arg = fc.args.get('query')
                         if query_arg:
                             tool_result = search_knowledge_base(query=query_arg)
