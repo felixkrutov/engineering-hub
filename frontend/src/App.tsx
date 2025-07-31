@@ -35,10 +35,20 @@ interface ModalState {
   onConfirm: (value: string | boolean | null) => void;
 }
 
-// New interface for files from the knowledge base
 interface KnowledgeBaseFile {
   id: string;
   name: string;
+}
+
+// --- New Nested Configuration Types ---
+interface AgentSettings {
+  model_name: string;
+  system_prompt: string;
+}
+
+interface AppConfig {
+  executor: AgentSettings;
+  controller: AgentSettings;
 }
 
 const user = { username: 'Engineer', theme: 'dark' };
@@ -55,13 +65,11 @@ function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('ai');
 
-  const [dirtyModelName, setDirtyModelName] = useState('');
-  const [dirtySystemPrompt, setDirtySystemPrompt] = useState('');
-  const [savedModelName, setSavedModelName] = useState('');
-  const [savedSystemPrompt, setSavedSystemPrompt] = useState('');
+  // --- Refactored State for Nested Config ---
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [dirtyConfig, setDirtyConfig] = useState<AppConfig | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   
-  // State for the new file manager
   const [kbFiles, setKbFiles] = useState<KnowledgeBaseFile[]>([]);
   const [isKbFilesLoading, setIsKbFilesLoading] = useState(false);
   const [kbFilesError, setKbFilesError] = useState<string | null>(null);
@@ -72,26 +80,19 @@ function App() {
   const [isFinalizing, setIsFinalizing] = useState<string | null>(null);
 
   const [modalState, setModalState] = useState<ModalState>({
-    visible: false,
-    title: '',
-    message: '',
-    showInput: false,
-    inputValue: '',
-    confirmText: 'OK',
-    onConfirm: () => {},
+    visible: false, title: '', message: '', showInput: false, inputValue: '', confirmText: 'OK', onConfirm: () => {},
   });
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const userInputRef = useRef<HTMLTextAreaElement>(null);
 
+  // When modal opens, copy saved config to dirty config for editing
   useEffect(() => {
-    if (isSettingsModalOpen) {
-        setDirtyModelName(savedModelName);
-        setDirtySystemPrompt(savedSystemPrompt);
+    if (isSettingsModalOpen && config) {
+        setDirtyConfig(JSON.parse(JSON.stringify(config))); // Deep copy
     }
-  }, [isSettingsModalOpen, savedModelName, savedSystemPrompt]);
+  }, [isSettingsModalOpen, config]);
 
-  // Effect to load files when the "База данных" tab is active
   useEffect(() => {
     const fetchFiles = async () => {
       setIsKbFilesLoading(true);
@@ -100,7 +101,6 @@ function App() {
         const response = await fetch(`${API_BASE_URL}/kb/files`);
         if (!response.ok) throw new Error('Failed to fetch file list');
         const data = await response.json();
-        // Assuming the backend returns an array of objects with 'id' and 'name'
         setKbFiles(data.map((file: any) => ({ id: file.id, name: file.name })));
       } catch (error) {
         console.error("Failed to fetch KB files:", error);
@@ -115,35 +115,31 @@ function App() {
     }
   }, [isSettingsModalOpen, activeSettingsTab]);
 
-
+  // Updated to load nested config
   const loadConfig = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/v1/config`);
       if (!response.ok) throw new Error('Failed to load config');
-      const config = await response.json();
-      setSavedModelName(config.model_name);
-      setDirtyModelName(config.model_name);
-      setSavedSystemPrompt(config.system_prompt);
-      setDirtySystemPrompt(config.system_prompt);
+      const data: AppConfig = await response.json();
+      setConfig(data);
+      setDirtyConfig(JSON.parse(JSON.stringify(data))); // Deep copy for editing
     } catch (error) {
       console.error("Could not load config:", error);
     }
   };
 
+  // Updated to save nested config
   const handleSaveSettings = async () => {
+    if (!dirtyConfig) return;
     setIsSaving(true);
     try {
       const response = await fetch(`${API_BASE_URL}/v1/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model_name: dirtyModelName,
-          system_prompt: dirtySystemPrompt,
-        }),
+        body: JSON.stringify(dirtyConfig),
       });
       if (!response.ok) throw new Error('Failed to save settings');
-      setSavedModelName(dirtyModelName);
-      setSavedSystemPrompt(dirtySystemPrompt);
+      setConfig(JSON.parse(JSON.stringify(dirtyConfig))); // Update saved state
     } catch(error) {
       console.error("Save settings failed:", error);
     } finally {
@@ -151,7 +147,6 @@ function App() {
     }
   };
 
-  // Updated handleUseFile to set a prompt template and activeFileId
   const handleUseFile = (fileId: string, fileName: string) => {
     setActiveFileId(fileId);
     setUserInput(`Проанализируй файл "${fileName}" по запросу: `);
@@ -179,11 +174,7 @@ function App() {
       if (!response.ok) throw new Error("Chat history not found");
       const rawMessages: any[] = await response.json();
       const formattedMessages: Message[] = rawMessages.map(m => ({
-          id: uuidv4(),
-          role: m.role,
-          content: m.content,
-          displayedContent: m.content,
-          thinking_steps: m.thinking_steps
+          id: uuidv4(), role: m.role, content: m.content, displayedContent: m.content, thinking_steps: m.thinking_steps
       }));
       setMessages(formattedMessages);
     } catch(error) {
@@ -197,45 +188,27 @@ function App() {
   const startNewChat = () => {
     setCurrentChatId(null);
     setMessages([]);
-    setActiveFileId(null); // Ensure active file is cleared for a new chat
+    setActiveFileId(null);
   };
   
   const handleRenameChat = async (chatId: string, currentTitle: string) => {
-    const newTitle = await showModal({
-        title: 'Переименовать чат',
-        message: 'Введите новое название для этого чата.',
-        showInput: true,
-        inputValue: currentTitle,
-        confirmText: 'Сохранить'
-    });
+    const newTitle = await showModal({ title: 'Переименовать чат', message: 'Введите новое название для этого чата.', showInput: true, inputValue: currentTitle, confirmText: 'Сохранить' });
     if (typeof newTitle === 'string' && newTitle.trim() && newTitle.trim() !== currentTitle) {
         try {
-            await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ new_title: newTitle.trim() })
-            });
+            await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_title: newTitle.trim() }) });
             await loadChats();
-        } catch (error) {
-            console.error("Error renaming chat:", error);
-        }
+        } catch (error) { console.error("Error renaming chat:", error); }
     }
   };
 
   const handleDeleteChat = async (chatId: string) => {
-    const confirmed = await showModal({
-        title: 'Удалить чат?',
-        message: 'Вы уверены, что хотите удалить этот чат? Это действие необратимо.',
-        confirmText: 'Удалить'
-    });
+    const confirmed = await showModal({ title: 'Удалить чат?', message: 'Вы уверены, что хотите удалить этот чат? Это действие необратимо.', confirmText: 'Удалить' });
     if (confirmed) {
         try {
             await fetch(`${API_BASE_URL}/v1/chats/${chatId}`, { method: 'DELETE' });
             if (currentChatId === chatId) startNewChat();
             await loadChats();
-        } catch (error) {
-            console.error("Error deleting chat:", error);
-        }
+        } catch (error) { console.error("Error deleting chat:", error); }
     }
   };
 
@@ -245,9 +218,7 @@ function App() {
   }, []);
 
   const scrollToBottom = () => {
-    if (chatContainerRef.current) {
-        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
+    chatContainerRef.current?.scrollTo({ top: chatContainerRef.current.scrollHeight, behavior: 'smooth' });
   };
 
   const handleSendMessage = async () => {
@@ -273,16 +244,11 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/v1/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: messageText,
-          conversation_id: conversationId,
-          file_id: activeFileId, // Pass the active file ID to the backend
-        }),
+        body: JSON.stringify({ message: messageText, conversation_id: conversationId, file_id: activeFileId }),
       });
-      setActiveFileId(null); // Reset after sending
+      setActiveFileId(null);
 
       if (!response.ok || !response.body) throw new Error(`Streaming failed: ${response.status}`);
-
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -290,11 +256,9 @@ function App() {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split('\n\n');
         buffer = parts.pop() || '';
-
         for (const part of parts) {
           if (part.startsWith('data: ')) {
             const jsonString = part.substring(6);
@@ -302,22 +266,9 @@ function App() {
               const data = JSON.parse(jsonString);
               if (data.type === 'final_answer') {
                 setIsFinalizing(tempModelMessageId);
-                setMessages(currentMessages => 
-                    currentMessages.map(m => 
-                        m.id === tempModelMessageId 
-                        ? { ...m, content: data.content, thinking_steps: liveThinkingSteps } 
-                        : m
-                    )
-                );
-                setTimeout(() => {
-                    setThinkingSteps(null);
-                    setStreamingMessageId(null);
-                    setIsFinalizing(null);
-                }, 500);
-                if (isNewChat) {
-                    setCurrentChatId(conversationId);
-                    await loadChats();
-                }
+                setMessages(currentMessages => currentMessages.map(m => m.id === tempModelMessageId ? { ...m, content: data.content, thinking_steps: liveThinkingSteps } : m));
+                setTimeout(() => { setThinkingSteps(null); setStreamingMessageId(null); setIsFinalizing(null); }, 500);
+                if (isNewChat) { setCurrentChatId(conversationId); await loadChats(); }
               } else {
                 liveThinkingSteps.push(data);
                 setThinkingSteps([...liveThinkingSteps]);
@@ -328,9 +279,7 @@ function App() {
       }
     } catch (error) {
         console.error("Streaming chat failed:", error);
-        setMessages(prev => prev.map(msg =>
-            msg.id === tempModelMessageId ? { ...msg, role: 'error', content: 'Ошибка потоковой передачи ответа.', displayedContent: 'Ошибка потоковой передачи ответа.' } : msg
-        ));
+        setMessages(prev => prev.map(msg => msg.id === tempModelMessageId ? { ...msg, role: 'error', content: 'Ошибка потоковой передачи ответа.', displayedContent: 'Ошибка потоковой передачи ответа.' } : msg));
     } finally {
         setIsLoading(false);
     }
@@ -350,13 +299,11 @@ function App() {
               return { ...m, displayedContent: m.content.substring(0, nextCharIndex + 1) };
             }
             return m;
-          })
-        );
+          }));
       }, 20);
       return () => clearInterval(interval);
     }
   }, [messages]);
-
 
   const adjustTextareaHeight = () => {
     if (userInputRef.current) {
@@ -371,10 +318,7 @@ function App() {
         visible: true, title: props.title || '', message: props.message || '',
         showInput: props.showInput || false, inputValue: props.inputValue || '',
         confirmText: props.confirmText || 'OK',
-        onConfirm: (value) => {
-          setModalState(prev => ({...prev, visible: false}));
-          resolve(value);
-        },
+        onConfirm: (value) => { setModalState(prev => ({...prev, visible: false})); resolve(value); },
       });
     });
   };
@@ -383,7 +327,8 @@ function App() {
   useEffect(adjustTextareaHeight, [userInput]);
 
   const handleThemeToggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
-  const hasChanges = dirtyModelName !== savedModelName || dirtySystemPrompt !== savedSystemPrompt;
+  // Updated logic to check for changes in nested config
+  const hasChanges = config && dirtyConfig ? JSON.stringify(config) !== JSON.stringify(dirtyConfig) : false;
 
   return (
     <div className={`app-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
@@ -472,10 +417,23 @@ function App() {
                 <button className={`tab-btn ${activeSettingsTab === 'db' ? 'active' : ''}`} onClick={() => setActiveSettingsTab('db')}>База Знаний</button>
               </div>
               <div className="tab-content">
-                {activeSettingsTab === 'ai' && (
+                {/* --- Overhauled AI Settings Tab --- */}
+                {activeSettingsTab === 'ai' && dirtyConfig && (
                   <div className="ai-settings">
-                    <label htmlFor="model-name">Модель</label><input id="model-name" type="text" value={dirtyModelName} onChange={(e) => setDirtyModelName(e.target.value)} />
-                    <label htmlFor="system-prompt">Системный промпт</label><textarea id="system-prompt" rows={10} value={dirtySystemPrompt} onChange={(e) => setDirtySystemPrompt(e.target.value)} />
+                    <div className="settings-group">
+                      <h4>Агент-Исполнитель (Gemini)</h4>
+                      <label htmlFor="executor-model-name">Модель</label>
+                      <input id="executor-model-name" type="text" value={dirtyConfig.executor.model_name} onChange={(e) => setDirtyConfig({...dirtyConfig, executor: {...dirtyConfig.executor, model_name: e.target.value}})} />
+                      <label htmlFor="executor-system-prompt">Системный промпт</label>
+                      <textarea id="executor-system-prompt" rows={6} value={dirtyConfig.executor.system_prompt} onChange={(e) => setDirtyConfig({...dirtyConfig, executor: {...dirtyConfig.executor, system_prompt: e.target.value}})} />
+                    </div>
+                    <div className="settings-group">
+                      <h4>Агент-Контролёр (OpenAI / OpenRouter)</h4>
+                      <label htmlFor="controller-model-name">Модель</label>
+                      <input id="controller-model-name" type="text" value={dirtyConfig.controller.model_name} onChange={(e) => setDirtyConfig({...dirtyConfig, controller: {...dirtyConfig.controller, model_name: e.target.value}})} />
+                      <label htmlFor="controller-system-prompt">Системный промпт</label>
+                      <textarea id="controller-system-prompt" rows={6} value={dirtyConfig.controller.system_prompt} onChange={(e) => setDirtyConfig({...dirtyConfig, controller: {...dirtyConfig.controller, system_prompt: e.target.value}})} />
+                    </div>
                   </div>
                 )}
                 {activeSettingsTab === 'db' && (
@@ -488,12 +446,7 @@ function App() {
                             {kbFiles.map((file) => (
                               <li key={file.id} className="kb-file-item">
                                 <span className="kb-file-name">{file.name}</span>
-                                <button 
-                                  className="modal-btn-confirm kb-use-btn"
-                                  onClick={() => handleUseFile(file.id, file.name)}
-                                >
-                                  Использовать
-                                </button>
+                                <button className="modal-btn-confirm kb-use-btn" onClick={() => handleUseFile(file.id, file.name)}>Использовать</button>
                               </li>
                             ))}
                           </ul>
