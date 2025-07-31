@@ -15,7 +15,8 @@ class KnowledgeBaseIndexer:
     def __init__(self, connector: KnowledgeBaseConnector) -> None:
         self.connector = connector
         self.files: Dict[str, Dict] = {}  # Stores file metadata, keyed by file_id
-        self.index: Optional[faiss.Index] = None  # The FAISS index
+        self.index: Optional[faiss.Index] = None  # The FAISS index for all chunks
+        self.embeddings: Optional[np.ndarray] = None # Raw embeddings for all chunks
         self.chunks: List[Dict] = []  # Stores chunk text and metadata
         self.embedding_model = 'models/embedding-001'
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -32,6 +33,7 @@ class KnowledgeBaseIndexer:
         self.files = {file['id']: file for file in all_files}
         self.chunks = []
         self.index = None
+        self.embeddings = None
 
         for file_id, file_meta in self.files.items():
             try:
@@ -64,16 +66,17 @@ class KnowledgeBaseIndexer:
             content=chunk_texts, 
             task_type="RETRIEVAL_DOCUMENT"
         )
-        embeddings = np.array(result['embedding'])
+        # Store raw embeddings
+        self.embeddings = np.array(result['embedding']).astype('float32')
         
-        dimension = embeddings.shape[1]
+        dimension = self.embeddings.shape[1]
         self.index = faiss.IndexFlatL2(dimension)
-        self.index.add(embeddings.astype('float32'))
+        self.index.add(self.embeddings)
         logger.info(f"FAISS index built successfully with {len(self.chunks)} chunks from {len(self.files)} files.")
 
-    def search(self, query: str, top_k: int = 5) -> List[Dict]:
-        logger.info(f"Performing semantic search with query: '{query}'")
-        if not self.index or not query:
+    def search(self, query: str, top_k: int = 5, file_id: Optional[str] = None) -> List[Dict]:
+        logger.info(f"Performing search with query: '{query}'" + (f" within file_id: {file_id}" if file_id else ""))
+        if (not self.index and not file_id) or not query or not self.chunks:
             return []
 
         query_embedding_result = genai.embed_content(
@@ -82,13 +85,49 @@ class KnowledgeBaseIndexer:
             task_type="RETRIEVAL_QUERY"
         )
         query_embedding = np.array([query_embedding_result['embedding']]).astype('float32')
-
-        distances, indices = self.index.search(query_embedding, top_k)
         
-        results = [self.chunks[i] for i in indices[0] if i < len(self.chunks)]
+        if file_id:
+            # --- Filtered search within a specific file ---
+            if self.embeddings is None:
+                logger.error("Embeddings not available for filtered search.")
+                return []
+            
+            # 1. Get chunks and their original indices for the target file
+            target_chunks = []
+            original_indices = []
+            for i, chunk in enumerate(self.chunks):
+                if chunk['file_id'] == file_id:
+                    target_chunks.append(chunk)
+                    original_indices.append(i)
+
+            if not target_chunks:
+                logger.warning(f"No chunks found for file_id: {file_id}")
+                return []
+
+            # 2. Create a temporary index with just the embeddings for these chunks
+            filtered_embeddings = self.embeddings[original_indices]
+            dimension = filtered_embeddings.shape[1]
+            temp_index = faiss.IndexFlatL2(dimension)
+            temp_index.add(filtered_embeddings)
+            
+            # 3. Search the temporary index
+            distances, temp_indices = temp_index.search(query_embedding, min(top_k, len(target_chunks)))
+            
+            # 4. Map the results from the temporary index back to the original chunk objects
+            results = [target_chunks[i] for i in temp_indices[0] if i < len(target_chunks)]
+
+        else:
+            # --- Global search across all files ---
+            if self.index is None: return []
+            distances, indices = self.index.search(query_embedding, top_k)
+            results = [self.chunks[i] for i in indices[0] if i < len(self.chunks)]
+
         logger.info(f"Search found {len(results)} relevant chunks.")
         return results
 
     def get_file_by_id(self, file_id: str) -> Optional[Dict[str, str]]:
-        # This is now a fast O(1) lookup instead of a slow O(n) loop
         return self.files.get(file_id)
+
+    def get_all_files(self) -> List[Dict]:
+        """Returns a list of all file metadata known to the indexer."""
+        return list(self.files.values()) if self.files else []
