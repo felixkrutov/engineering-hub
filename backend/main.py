@@ -201,20 +201,23 @@ async def determine_file_context(query: str, files: List[Dict]) -> Optional[str]
     # Create a simplified list of files for the prompt
     files_prompt_part = "\n".join([f"- File Name: '{f.get('name', 'Unknown')}', File ID: '{f.get('id')}'" for f in files])
     
-    prompt = f"""You are a specialized assistant for routing user queries. Your task is to identify if a user's query refers to a specific file from a given list.
+    prompt = f"""You are a highly specialized assistant for routing user queries to the correct file. Your task is to meticulously analyze the user's query and the list of available files, then decide which single file is the most relevant.
 
-User Query: "{query}"
+**Your decision-making process must follow these steps:**
+1.  **Prioritize Specificity:** First, look for specific nouns or identifiers in the query (e.g., "sprint", "plan", a project name, a document number). These are much stronger signals than general terms (e.g., "equipment", "database", "info").
+2.  **Direct Match:** Check if these specific terms directly match or are very similar to a filename. A query about "the sprint" is an extremely strong match for a file named "sprint_plan.pdf".
+3.  **Weigh Conflicting Signals:** If the query contains both a specific term and a general term (e.g., "sprint" and "equipment"), you MUST give overwhelming priority to the file matching the specific term. It's more likely the user wants information about equipment *within the context of the sprint*.
+4.  **Default to No Match:** If you cannot find a strong, unambiguous match to a single file, you MUST default to no match. It's better to perform a global search than to confidently choose the wrong file.
 
-List of available files:
+**User Query:** "{query}"
+
+**List of available files:**
 {files_prompt_part}
 
-Analyze the User Query. Does it explicitly or implicitly refer to one of the files in the list above?
+Based on your step-by-step analysis, which file ID is the correct context for this query?
 Your response MUST be a single, valid JSON object with one key: "file_id".
-- If the query refers to a specific file, the value for "file_id" MUST be that file's ID string from the list.
-- If the query is general or does not refer to any specific file, the value for "file_id" MUST be null.
-
-Example for a match: {{"file_id": "some-uuid-v4-string"}}
-Example for no match: {{"file_id": null}}
+- If you identified a specific file, provide its ID.
+- If no specific file is a clear match, the value MUST be null.
 
 JSON Response:"""
     
