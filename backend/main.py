@@ -57,11 +57,11 @@ if CONTROLLER_PROVIDER == "openrouter":
     logger.info("Configuring Controller to use OpenRouter.")
 else: # Default to openai
     CONTROLLER_API_KEY = os.getenv("OPENAI_API_KEY")
-    CONTROLLER_BASE_URL = "https://api.openai.com/v1" # Standard OpenAI URL
+    CONTROLLER_BASE_URL = "https://api.openai.com/v1"
     logger.info("Configuring Controller to use OpenAI.")
 
 if not CONTROLLER_API_KEY:
-    logger.warning("Controller API key is not set. The Controller stage will be skipped.")
+    logger.warning("Controller API key is not set. The Quality Control stage will be skipped.")
     controller_client = None
 else:
     controller_client = AsyncOpenAI(
@@ -91,6 +91,25 @@ def search_knowledge_base(query: str) -> str:
         return "По вашему запросу в базе знаний ничего не найдено."
     formatted_results = [f"--- Результат поиска №{i+1} (из файла: {chunk['file_name']}) ---\n{chunk['text']}\n" for i, chunk in enumerate(results)]
     return "\n".join(formatted_results)
+
+def list_all_files_summary() -> str:
+    """
+    Lists a summary of all available files in the knowledge base.
+    Returns a string with the name and ID of each file, useful for discovery.
+    """
+    logger.info("TOOL CALL: list_all_files_summary")
+    try:
+        all_files = kb_indexer.get_all_files()
+        if not all_files:
+            return "В базе знаний нет доступных файлов."
+        
+        summary = "Доступные файлы в базе знаний:\n"
+        for f in all_files:
+            summary += f"- Имя файла: '{f.get('name', 'N/A')}', ID: '{f.get('id', 'N/A')}'\n"
+        return summary.strip()
+    except Exception as e:
+        logger.error(f"Error in list_all_files_summary tool: {e}", exc_info=True)
+        return f"ОШИБКА: Не удалось получить список файлов: {e}"
 
 
 app = FastAPI()
@@ -213,60 +232,6 @@ async def list_chats():
     return sorted(chats, key=lambda item: os.path.getmtime(os.path.join(HISTORY_DIR, f"{item.id}.json")), reverse=True)
 
 
-async def determine_file_context(query: str, files: List[Dict]) -> Optional[str]:
-    """
-    Uses an LLM to determine if the user's query refers to a specific file.
-    Returns the file_id if a strong match is found, otherwise None.
-    """
-    if not files or not query:
-        return None
-
-    files_prompt_part = "\n".join([f"- File Name: '{f.get('name', 'Unknown')}', File ID: '{f.get('id')}'" for f in files])
-    
-    prompt = f"""You are a highly specialized assistant for routing user queries to the correct file. Your task is to meticulously analyze the user's query and the list of available files, then decide which single file is the most relevant.
-
-**Your decision-making process must follow these steps:**
-1.  **Prioritize Specificity:** First, look for specific nouns or identifiers in the query (e.g., "sprint", "plan", a project name, a document number). These are much stronger signals than general terms (e.g., "equipment", "database", "info").
-2.  **Direct Match:** Check if these specific terms directly match or are very similar to a filename. A query about "the sprint" is an extremely strong match for a file named "sprint_plan.pdf".
-3.  **Weigh Conflicting Signals:** If the query contains both a specific term and a general term (e.g., "sprint" and "equipment"), you MUST give overwhelming priority to the file matching the specific term. It's more likely the user wants information about equipment *within the context of the sprint*.
-4.  **Default to No Match:** If you cannot find a strong, unambiguous match to a single file, you MUST default to no match. It's better to perform a global search than to confidently choose the wrong file.
-
-**User Query:** "{query}"
-
-**List of available files:**
-{files_prompt_part}
-
-Based on your step-by-step analysis, which file ID is the correct context for this query?
-Your response MUST be a single, valid JSON object with one key: "file_id".
-- If you identified a specific file, provide its ID.
-- If no specific file is a clear match, the value MUST be null.
-
-JSON Response:"""
-    
-    try:
-        context_model = genai.GenerativeModel('gemini-1.5-flash')
-        response = await context_model.generate_content_async(prompt)
-        
-        cleaned_text = response.text.strip()
-        if cleaned_text.startswith("```json"):
-            cleaned_text = cleaned_text[7:]
-        if cleaned_text.endswith("```"):
-            cleaned_text = cleaned_text[:-3]
-        
-        data = json.loads(cleaned_text)
-        file_id = data.get("file_id")
-        
-        if file_id and any(f.get('id') == file_id for f in files):
-            logger.info(f"Context analysis determined specific file context. File ID: {file_id}")
-            return file_id
-        else:
-            logger.info("Context analysis found no specific file context or returned an invalid ID.")
-            return None
-    except Exception as e:
-        logger.error(f"Could not determine file context due to an error: {e}")
-        return None
-
-
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
     async def event_generator():
@@ -291,157 +256,125 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         
         try:
             config = load_config()
-            model_kwargs = {
-                'model_name': config.executor.model_name,
-                'tools': [analyze_document, search_knowledge_base]
-            }
-            if config.executor.system_prompt and config.executor.system_prompt.strip():
-                model_kwargs['system_instruction'] = config.executor.system_prompt
-            model = genai.GenerativeModel(**model_kwargs)
-            cleaned_history = [{"role": msg["role"], "parts": msg["parts"]} for msg in history]
-            chat_session = model.start_chat(history=cleaned_history)
+            MAX_ITERATIONS = 3
+            feedback_from_controller = ""
+            final_approved_answer = "Агент не смог сформировать ответ."
+            tool_context = ""
             
-            if not request.file_id:
-                step_data = {'type': 'thought', 'content': '[Анализ] Определяю, относится ли запрос к конкретному файлу...'}
-                steps_history.append(step_data)
-                yield f"data: {json.dumps(step_data)}\n\n"
-                
-                all_files = kb_indexer.get_all_files()
-                contextual_file_id = await determine_file_context(request.message, all_files)
-
-                if contextual_file_id:
-                    file_info = kb_indexer.get_file_by_id(contextual_file_id)
-                    file_name = file_info.get('name', contextual_file_id) if file_info else contextual_file_id
-                    
-                    thought_text = f"[Контекст определен] Запрос относится к файлу «{file_name}». Буду искать только в нём."
-                    step_data = {'type': 'thought', 'content': thought_text}
-                    steps_history.append(step_data)
-                    yield f"data: {json.dumps(step_data)}\n\n"
-                    
-                    request.file_id = contextual_file_id 
+            for iteration in range(MAX_ITERATIONS):
+                # --- STAGE 1: EXECUTOR (AI1) ---
+                step_content = f"[Исполнитель][Итерация {iteration+1}/{MAX_ITERATIONS}] "
+                if iteration > 0:
+                    step_content += f"Получены правки от контроля качества. Начинаю доработку..."
                 else:
-                    thought_text = "[Контекст не определен] Запрос является общим. Буду искать по всей базе знаний."
-                    step_data = {'type': 'thought', 'content': thought_text}
-                    steps_history.append(step_data)
-                    yield f"data: {json.dumps(step_data)}\n\n"
-
-            # --- EXECUTOR STAGE ---
-            initial_prompt = request.message
-            if request.file_id:
-                initial_prompt += f"\n\n[INSTRUCTION FOR EXECUTOR]\nAs a Field Researcher, you MUST use the 'analyze_document' tool with file_id: '{request.file_id}' to create a draft."
-            
-            step_data = {'type': 'thought', 'content': '[Быстрое мышление] Активирован режим сбора фактов...'}
-            steps_history.append(step_data)
-            yield f"data: {json.dumps(step_data)}\n\n"
-            
-            response = await chat_session.send_message_async(initial_prompt)
-            executor_draft_text = "Исполнитель не смог сформировать черновик."
-            tool_results_context = ""
-
-            while True:
-                if not response.candidates:
-                    executor_draft_text = "Модель-исполнитель не вернула кандидатов."
-                    break
-                part = response.candidates[0].content.parts[0]
-                if hasattr(part, 'function_call') and part.function_call.name:
-                    fc = part.function_call
-                    human_readable_action = ""
-                    if fc.name == 'search_knowledge_base':
-                        human_readable_action = f"Ищу информацию по запросу «{fc.args.get('query')}» во всей базе знаний..."
-                    elif fc.name == 'analyze_document':
-                        file_info = kb_indexer.get_file_by_id(fc.args.get('file_id'))
-                        file_name = file_info['name'] if file_info else fc.args.get('file_id')
-                        human_readable_action = f"Анализирую содержимое файла «{file_name}» по запросу «{fc.args.get('query')}»..."
-
-                    if human_readable_action:
-                        step_data = {'type': 'thought', 'content': human_readable_action}
-                        steps_history.append(step_data)
-                        yield f"data: {json.dumps(step_data)}\n\n"
-                    
-                    tool_result = ""
-                    if fc.name == 'analyze_document':
-                        tool_result = analyze_document(file_id=fc.args.get('file_id'), query=fc.args.get('query'))
-                    elif fc.name == 'search_knowledge_base':
-                        tool_result = search_knowledge_base(query=fc.args.get('query'))
-                    else:
-                        tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
-
-                    tool_results_context += f"---\n{tool_result}\n"
-
-                    if "ОШИБКА:" in tool_result or "ничего не найдено" in tool_result:
-                        summary_content = "В базе знаний не найдено релевантной информации."
-                    else:
-                        source_files = list(set(re.findall(r"\(из файла: (.*?)\)", tool_result)))
-                        summary_content = f"Найдена релевантная информация в следующих документах: {', '.join(source_files)}." if source_files else "Найдена релевантная информация в базе знаний."
-
-                    step_data = {'type': 'tool_result', 'content': summary_content}
-                    steps_history.append(step_data)
-                    yield f"data: {json.dumps(step_data)}\n\n"
-                    
-                    response = await chat_session.send_message_async(
-                        gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result}))
-                    )
-                elif hasattr(part, 'text') and part.text:
-                    executor_draft_text = part.text
-                    break
-                else:
-                    executor_draft_text = "Модель-исполнитель вернула пустой ответ."
-                    break
-            
-            # --- CONTROLLER STAGE ---
-            if not controller_client:
-                logger.info("Controller client not available, skipping Deep Analysis stage.")
-                final_answer_text = executor_draft_text
-            else:
-                step_data = {'type': 'thought', 'content': '[Глубокий анализ] Факты собраны. Передаю на глубокий анализ...'}
-                steps_history.append(step_data)
-                yield f"data: {json.dumps(step_data)}\n\n"
+                    step_content += "Анализирую запрос и готовлю ответ..."
                 
-                controller_prompt = f"""You are the Controller, a strategic reasoning agent. Your role is to synthesize a final, user-facing answer based on the initial query, raw data from tools, and a draft answer from a field-researcher agent (Executor).
+                steps_history.append({'type': 'thought', 'content': step_content})
+                yield f"data: {json.dumps(steps_history[-1])}\n\n"
 
-1.  **Analyze the User's Original Query:** Understand the user's core intent.
-2.  **Review the Raw Data:** This is the direct output from the search tools. It contains facts but may be messy or verbose.
-3.  **Evaluate the Executor's Draft:** This is a preliminary answer. It might be good, but it might also be too literal or miss the bigger picture.
-4.  **Synthesize Your Final Answer:** Create a comprehensive, well-structured, and easy-to-read answer in Russian. Address the user's query directly, using the raw data for evidence and the Executor's draft as a starting point. DO NOT just repeat the draft. Refine it, correct it, and add a concluding summary if appropriate.
+                prompt_for_executor = request.message
+                if iteration > 0:
+                    prompt_for_executor = f"""Your previous answer was reviewed and requires changes. Please generate a new, improved final-quality response that addresses the following feedback.
+<feedback>
+{feedback_from_controller}
+</feedback>
 
----
-**User's Original Query:**
+The original user query was:
+<original_query>
 {request.message}
----
-**Raw Data Collected by Executor:**
-{tool_results_context}
----
-**Executor's Draft Answer:**
-{executor_draft_text}
----
-
-**Your Final, Synthesized Answer (in Russian):**"""
-
-                controller_model_name = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
+</original_query>
+"""
                 
-                try:
-                    controller_response = await controller_client.chat.completions.create(
-                        model=controller_model_name,
-                        messages=[
-                            {"role": "system", "content": config.controller.system_prompt},
-                            {"role": "user", "content": controller_prompt}
-                        ]
-                    )
-                    final_answer_text = controller_response.choices[0].message.content
-                    step_data = {'type': 'thought', 'content': '[Глубокий анализ] Финальное заключение готово.'}
-                    steps_history.append(step_data)
-                    yield f"data: {json.dumps(step_data)}\n\n"
-                except Exception as e:
-                    logger.error(f"Error during Controller stage: {e}", exc_info=True)
-                    step_data = {'type': 'error', 'content': f'Ошибка на этапе Глубокого Анализа: {e}'}
-                    yield f"data: {json.dumps(step_data)}\n\n"
-                    final_answer_text = f"Произошла ошибка на этапе Глубокого Анализа. Возвращаю черновой ответ:\n\n{executor_draft_text}"
+                model = genai.GenerativeModel(
+                    model_name=config.executor.model_name,
+                    tools=[analyze_document, search_knowledge_base, list_all_files_summary],
+                    system_instruction=config.executor.system_prompt
+                )
+                chat_session = model.start_chat(history=[]) # Start fresh for each iteration
+                
+                response = await chat_session.send_message_async(prompt_for_executor)
+                executor_answer = "Исполнитель не смог сформировать ответ на данной итерации."
+                tool_context = "" # Reset context for this iteration
+
+                # --- Executor's internal tool-use loop ---
+                while True:
+                    if not response.candidates:
+                        executor_answer = "Модель-исполнитель не вернула кандидатов."
+                        break
+                    
+                    part = response.candidates[0].content.parts[0]
+                    
+                    if hasattr(part, 'function_call') and part.function_call.name:
+                        fc = part.function_call
+                        tool_map = {
+                            "analyze_document": analyze_document,
+                            "search_knowledge_base": search_knowledge_base,
+                            "list_all_files_summary": list_all_files_summary,
+                        }
+                        
+                        tool_func = tool_map.get(fc.name)
+                        if not tool_func:
+                            tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
+                        else:
+                            # Safely call the function with its arguments
+                            tool_result = tool_func(**fc.args)
+
+                        tool_context += f"Вызов инструмента {fc.name} с аргументами {fc.args} дал результат:\n{tool_result}\n\n"
+
+                        response = await chat_session.send_message_async(
+                            gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result}))
+                        )
+                    elif hasattr(part, 'text') and part.text:
+                        executor_answer = part.text
+                        break
+                    else:
+                        executor_answer = "Модель-исполнитель вернула пустой ответ."
+                        break
+                
+                final_approved_answer = executor_answer
+
+                # --- STAGE 2: CONTROLLER (AI2) ---
+                if not controller_client:
+                    logger.info("Controller client not configured. Approving answer by default.")
+                    break
+
+                step_data = {'type': 'thought', 'content': f"[Контроль][Итерация {iteration+1}] Проверяю качество ответа..."}
+                steps_history.append(step_data)
+                yield f"data: {json.dumps(step_data)}\n\n"
+
+                controller_prompt = f"""You are a Quality Control auditor. Your task is to review the response generated by an Engineer AI.
+The original user query was: <user_query>{request.message}</user_query>
+The Engineer AI used its tools and retrieved this context: <retrieved_context>{tool_context if tool_context else "None"}</retrieved_context>
+The Engineer AI produced this answer: <answer_to_review>{executor_answer}</answer_to_review>
+Critically evaluate the answer. Is it complete, accurate, and fully addresses the user's query?
+Your response MUST be a valid JSON object with two keys: "is_approved" (boolean) and "feedback" (string). If the answer is perfect, set "is_approved" to true. If it needs any improvement, set it to false and provide concise, actionable feedback.
+"""
+                
+                controller_model = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
+                controller_response = await controller_client.chat.completions.create(
+                    model=controller_model,
+                    messages=[{"role": "system", "content": config.controller.system_prompt}, {"role": "user", "content": controller_prompt}],
+                    response_format={"type": "json_object"}
+                )
+                review_data = json.loads(controller_response.choices[0].message.content)
+                
+                if review_data.get("is_approved"):
+                    step_data = {'type': 'thought', 'content': f"[Контроль][Итерация {iteration+1}] Качество подтверждено."}
+                    steps_history.append(step_data); yield f"data: {json.dumps(step_data)}\n\n"
+                    break # EXIT THE LOOP
+                else:
+                    feedback_from_controller = review_data.get("feedback", "Необходимо внести улучшения.")
+                    step_data = {'type': 'thought', 'content': f"[Контроль][Итерация {iteration+1}] Обнаружены недочеты. Комментарий: {feedback_from_controller}"}
+                    steps_history.append(step_data); yield f"data: {json.dumps(step_data)}\n\n"
+                    if iteration == MAX_ITERATIONS - 1:
+                        logger.warning("Max iterations reached. Using the last available answer.")
 
         except Exception as e:
-            logger.error(f"Error during agent loop for conversation {conversation_id}: {e}", exc_info=True)
-            error_content = f"Критическая ошибка в цикле агента: {str(e)}"
-            yield f"data: {json.dumps({'type': 'error', 'content': error_content})}\n\n"
-            final_answer_text = "К сожалению, произошла ошибка. Не удалось завершить мыслительный процесс."
+            logger.error(f"Critical error in Quality Control Loop: {e}", exc_info=True)
+            final_approved_answer = f"Критическая ошибка в цикле обработки: {e}"
+
+        # --- FINALIZATION STAGE ---
+        final_answer_text = final_approved_answer
         
         user_message = Message(role="user", parts=[request.message])
         model_message = Message(role="model", parts=[final_answer_text], thinking_steps=[ThinkingStep(**step) for step in steps_history])
