@@ -128,8 +128,8 @@ class Message(BaseModel):
 # --- API Endpoints ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
-        executor=AgentSettings(model_name='gemini-1.5-pro', system_prompt=''),
-        controller=AgentSettings(model_name='gpt-4o-mini', system_prompt=CONTROLLER_SYSTEM_PROMPT)
+        executor=AgentSettings(model_name='gemini-2.5-pro', system_prompt=''),
+        controller=AgentSettings(model_name='o4-mini', system_prompt=CONTROLLER_SYSTEM_PROMPT)
     )
     if not os.path.exists(CONFIG_FILE):
         return default_config
