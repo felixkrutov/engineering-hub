@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted
+from openai import AsyncOpenAI
 
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
@@ -44,6 +45,29 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set!")
 
 genai.configure(api_key=GEMINI_API_KEY)
+
+# --- Dynamic Controller Client Initialization ---
+CONTROLLER_PROVIDER = os.getenv("CONTROLLER_PROVIDER", "openai").lower()
+CONTROLLER_API_KEY = None
+CONTROLLER_BASE_URL = None
+
+if CONTROLLER_PROVIDER == "openrouter":
+    CONTROLLER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    CONTROLLER_BASE_URL = "https://openrouter.ai/api/v1"
+    logger.info("Configuring Controller to use OpenRouter.")
+else: # Default to openai
+    CONTROLLER_API_KEY = os.getenv("OPENAI_API_KEY")
+    CONTROLLER_BASE_URL = "https://api.openai.com/v1" # Standard OpenAI URL
+    logger.info("Configuring Controller to use OpenAI.")
+
+if not CONTROLLER_API_KEY:
+    logger.warning("Controller API key is not set. The Controller stage will be skipped.")
+    controller_client = None
+else:
+    controller_client = AsyncOpenAI(
+        base_url=CONTROLLER_BASE_URL,
+        api_key=CONTROLLER_API_KEY,
+    )
 
 # --- Agent Tools Definition ---
 def analyze_document(file_id: str, query: str) -> str:
@@ -175,7 +199,6 @@ async def list_chats():
                 with open(title_path, 'r', encoding='utf-8') as f:
                     title = f.read().strip() or title
             else:
-                # --- INSTRUCTION: More robust title generation from history ---
                 try:
                     with open(os.path.join(HISTORY_DIR, filename), 'r', encoding='utf-8') as f:
                         history = json.load(f)
@@ -185,7 +208,7 @@ async def list_chats():
                                title = first_user_message['parts'][0][:50]
                 except (json.JSONDecodeError, IndexError) as e:
                     logger.warning(f"Could not generate title for {filename} due to error: {e}")
-                    pass # Keep default title
+                    pass
             chats.append(ChatInfo(id=conversation_id, title=title))
     return sorted(chats, key=lambda item: os.path.getmtime(os.path.join(HISTORY_DIR, f"{item.id}.json")), reverse=True)
 
@@ -198,7 +221,6 @@ async def determine_file_context(query: str, files: List[Dict]) -> Optional[str]
     if not files or not query:
         return None
 
-    # Create a simplified list of files for the prompt
     files_prompt_part = "\n".join([f"- File Name: '{f.get('name', 'Unknown')}', File ID: '{f.get('id')}'" for f in files])
     
     prompt = f"""You are a highly specialized assistant for routing user queries to the correct file. Your task is to meticulously analyze the user's query and the list of available files, then decide which single file is the most relevant.
@@ -222,11 +244,9 @@ Your response MUST be a single, valid JSON object with one key: "file_id".
 JSON Response:"""
     
     try:
-        # Use a fast and cheap model for this simple classification task
         context_model = genai.GenerativeModel('gemini-1.5-flash')
         response = await context_model.generate_content_async(prompt)
         
-        # Robust JSON parsing from the model's response
         cleaned_text = response.text.strip()
         if cleaned_text.startswith("```json"):
             cleaned_text = cleaned_text[7:]
@@ -236,7 +256,6 @@ JSON Response:"""
         data = json.loads(cleaned_text)
         file_id = data.get("file_id")
         
-        # Final validation: ensure the returned file_id actually exists in our list
         if file_id and any(f.get('id') == file_id for f in files):
             logger.info(f"Context analysis determined specific file context. File ID: {file_id}")
             return file_id
@@ -254,7 +273,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
         steps_history: List[Dict[str, Any]] = []
         final_answer_text = "Произошла ошибка при обработке ответа."
 
-        # --- INSTRUCTION: Robust history file creation and loading ---
         conversation_id = request.conversation_id
         os.makedirs(HISTORY_DIR, exist_ok=True)
         history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
@@ -279,13 +297,10 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             }
             if config.executor.system_prompt and config.executor.system_prompt.strip():
                 model_kwargs['system_instruction'] = config.executor.system_prompt
-            
             model = genai.GenerativeModel(**model_kwargs)
             cleaned_history = [{"role": msg["role"], "parts": msg["parts"]} for msg in history]
             chat_session = model.start_chat(history=cleaned_history)
             
-            # --- NEW CONTEXT ANALYSIS STEP ---
-            # Check if a file context is already provided. If so, trust it.
             if not request.file_id:
                 step_data = {'type': 'thought', 'content': '[Анализ] Определяю, относится ли запрос к конкретному файлу...'}
                 steps_history.append(step_data)
@@ -295,7 +310,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 contextual_file_id = await determine_file_context(request.message, all_files)
 
                 if contextual_file_id:
-                    # We found a specific file the user is talking about!
                     file_info = kb_indexer.get_file_by_id(contextual_file_id)
                     file_name = file_info.get('name', contextual_file_id) if file_info else contextual_file_id
                     
@@ -304,7 +318,6 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
                     
-                    # CRUCIAL: Override the request's file_id with our finding.
                     request.file_id = contextual_file_id 
                 else:
                     thought_text = "[Контекст не определен] Запрос является общим. Буду искать по всей базе знаний."
@@ -312,25 +325,24 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     steps_history.append(step_data)
                     yield f"data: {json.dumps(step_data)}\n\n"
 
-            # --- END OF NEW BLOCK ---
-            
+            # --- EXECUTOR STAGE ---
             initial_prompt = request.message
             if request.file_id:
-                initial_prompt += f"\n\n[ИНСТРУКЦИЯ ДЛЯ АГЕНТА]\nПользователь сфокусирован на конкретном файле. Его ID: '{request.file_id}'. Для ответа на вопрос пользователя, ты ДОЛЖЕН использовать инструмент `analyze_document`. Передай этот ID в аргумент `file_id` и извлеки поисковый запрос пользователя из его сообщения для аргумента `query`."
+                initial_prompt += f"\n\n[INSTRUCTION FOR EXECUTOR]\nAs a Field Researcher, you MUST use the 'analyze_document' tool with file_id: '{request.file_id}' to create a draft."
             
-            step_data = {'type': 'thought', 'content': 'Обдумываю ваш запрос...'}
+            step_data = {'type': 'thought', 'content': '[Быстрое мышление] Активирован режим сбора фактов...'}
             steps_history.append(step_data)
             yield f"data: {json.dumps(step_data)}\n\n"
             
             response = await chat_session.send_message_async(initial_prompt)
+            executor_draft_text = "Исполнитель не смог сформировать черновик."
+            tool_results_context = ""
 
             while True:
                 if not response.candidates:
-                    final_answer_text = "Модель не вернула кандидатов в ответе. Возможно, сработал защитный фильтр."
+                    executor_draft_text = "Модель-исполнитель не вернула кандидатов."
                     break
-
                 part = response.candidates[0].content.parts[0]
-                
                 if hasattr(part, 'function_call') and part.function_call.name:
                     fc = part.function_call
                     human_readable_action = ""
@@ -354,6 +366,8 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                     else:
                         tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
 
+                    tool_results_context += f"---\n{tool_result}\n"
+
                     if "ОШИБКА:" in tool_result or "ничего не найдено" in tool_result:
                         summary_content = "В базе знаний не найдено релевантной информации."
                     else:
@@ -368,12 +382,61 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                         gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result}))
                     )
                 elif hasattr(part, 'text') and part.text:
-                    final_answer_text = part.text
+                    executor_draft_text = part.text
                     break
                 else:
-                    final_answer_text = "Модель вернула пустой ответ."
+                    executor_draft_text = "Модель-исполнитель вернула пустой ответ."
                     break
-        
+            
+            # --- CONTROLLER STAGE ---
+            if not controller_client:
+                logger.info("Controller client not available, skipping Deep Analysis stage.")
+                final_answer_text = executor_draft_text
+            else:
+                step_data = {'type': 'thought', 'content': '[Глубокий анализ] Факты собраны. Передаю на глубокий анализ...'}
+                steps_history.append(step_data)
+                yield f"data: {json.dumps(step_data)}\n\n"
+                
+                controller_prompt = f"""You are the Controller, a strategic reasoning agent. Your role is to synthesize a final, user-facing answer based on the initial query, raw data from tools, and a draft answer from a field-researcher agent (Executor).
+
+1.  **Analyze the User's Original Query:** Understand the user's core intent.
+2.  **Review the Raw Data:** This is the direct output from the search tools. It contains facts but may be messy or verbose.
+3.  **Evaluate the Executor's Draft:** This is a preliminary answer. It might be good, but it might also be too literal or miss the bigger picture.
+4.  **Synthesize Your Final Answer:** Create a comprehensive, well-structured, and easy-to-read answer in Russian. Address the user's query directly, using the raw data for evidence and the Executor's draft as a starting point. DO NOT just repeat the draft. Refine it, correct it, and add a concluding summary if appropriate.
+
+---
+**User's Original Query:**
+{request.message}
+---
+**Raw Data Collected by Executor:**
+{tool_results_context}
+---
+**Executor's Draft Answer:**
+{executor_draft_text}
+---
+
+**Your Final, Synthesized Answer (in Russian):**"""
+
+                controller_model_name = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
+                
+                try:
+                    controller_response = await controller_client.chat.completions.create(
+                        model=controller_model_name,
+                        messages=[
+                            {"role": "system", "content": config.controller.system_prompt},
+                            {"role": "user", "content": controller_prompt}
+                        ]
+                    )
+                    final_answer_text = controller_response.choices[0].message.content
+                    step_data = {'type': 'thought', 'content': '[Глубокий анализ] Финальное заключение готово.'}
+                    steps_history.append(step_data)
+                    yield f"data: {json.dumps(step_data)}\n\n"
+                except Exception as e:
+                    logger.error(f"Error during Controller stage: {e}", exc_info=True)
+                    step_data = {'type': 'error', 'content': f'Ошибка на этапе Глубокого Анализа: {e}'}
+                    yield f"data: {json.dumps(step_data)}\n\n"
+                    final_answer_text = f"Произошла ошибка на этапе Глубокого Анализа. Возвращаю черновой ответ:\n\n{executor_draft_text}"
+
         except Exception as e:
             logger.error(f"Error during agent loop for conversation {conversation_id}: {e}", exc_info=True)
             error_content = f"Критическая ошибка в цикле агента: {str(e)}"
@@ -409,7 +472,7 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# The remaining endpoints are unchanged and are included for completeness.
+
 @app.get("/api/v1/chats/{conversation_id}")
 async def get_chat_history(conversation_id: str):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
