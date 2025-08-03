@@ -128,8 +128,8 @@ class Message(BaseModel):
 # --- API Endpoints ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
-        executor=AgentSettings(model_name='gemini-2.5-pro', system_prompt=''),
-        controller=AgentSettings(model_name='o4-mini', system_prompt=CONTROLLER_SYSTEM_PROMPT)
+        executor=AgentSettings(model_name='gemini-1.5-pro', system_prompt=''),
+        controller=AgentSettings(model_name='gpt-4o-mini', system_prompt=CONTROLLER_SYSTEM_PROMPT)
     )
     if not os.path.exists(CONFIG_FILE):
         return default_config
@@ -190,6 +190,61 @@ async def list_chats():
     return sorted(chats, key=lambda item: os.path.getmtime(os.path.join(HISTORY_DIR, f"{item.id}.json")), reverse=True)
 
 
+async def determine_file_context(query: str, files: List[Dict]) -> Optional[str]:
+    """
+    Uses an LLM to determine if the user's query refers to a specific file.
+    Returns the file_id if a strong match is found, otherwise None.
+    """
+    if not files or not query:
+        return None
+
+    # Create a simplified list of files for the prompt
+    files_prompt_part = "\n".join([f"- File Name: '{f.get('name', 'Unknown')}', File ID: '{f.get('id')}'" for f in files])
+    
+    prompt = f"""You are a specialized assistant for routing user queries. Your task is to identify if a user's query refers to a specific file from a given list.
+
+User Query: "{query}"
+
+List of available files:
+{files_prompt_part}
+
+Analyze the User Query. Does it explicitly or implicitly refer to one of the files in the list above?
+Your response MUST be a single, valid JSON object with one key: "file_id".
+- If the query refers to a specific file, the value for "file_id" MUST be that file's ID string from the list.
+- If the query is general or does not refer to any specific file, the value for "file_id" MUST be null.
+
+Example for a match: {{"file_id": "some-uuid-v4-string"}}
+Example for no match: {{"file_id": null}}
+
+JSON Response:"""
+    
+    try:
+        # Use a fast and cheap model for this simple classification task
+        context_model = genai.GenerativeModel('gemini-1.5-flash')
+        response = await context_model.generate_content_async(prompt)
+        
+        # Robust JSON parsing from the model's response
+        cleaned_text = response.text.strip()
+        if cleaned_text.startswith("```json"):
+            cleaned_text = cleaned_text[7:]
+        if cleaned_text.endswith("```"):
+            cleaned_text = cleaned_text[:-3]
+        
+        data = json.loads(cleaned_text)
+        file_id = data.get("file_id")
+        
+        # Final validation: ensure the returned file_id actually exists in our list
+        if file_id and any(f.get('id') == file_id for f in files):
+            logger.info(f"Context analysis determined specific file context. File ID: {file_id}")
+            return file_id
+        else:
+            logger.info("Context analysis found no specific file context or returned an invalid ID.")
+            return None
+    except Exception as e:
+        logger.error(f"Could not determine file context due to an error: {e}")
+        return None
+
+
 @app.post("/api/v1/chat/stream")
 async def stream_chat(request: ChatRequest) -> StreamingResponse:
     async def event_generator():
@@ -225,6 +280,36 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
             model = genai.GenerativeModel(**model_kwargs)
             cleaned_history = [{"role": msg["role"], "parts": msg["parts"]} for msg in history]
             chat_session = model.start_chat(history=cleaned_history)
+            
+            # --- NEW CONTEXT ANALYSIS STEP ---
+            # Check if a file context is already provided. If so, trust it.
+            if not request.file_id:
+                step_data = {'type': 'thought', 'content': '[Анализ] Определяю, относится ли запрос к конкретному файлу...'}
+                steps_history.append(step_data)
+                yield f"data: {json.dumps(step_data)}\n\n"
+                
+                all_files = kb_indexer.get_all_files()
+                contextual_file_id = await determine_file_context(request.message, all_files)
+
+                if contextual_file_id:
+                    # We found a specific file the user is talking about!
+                    file_info = kb_indexer.get_file_by_id(contextual_file_id)
+                    file_name = file_info.get('name', contextual_file_id) if file_info else contextual_file_id
+                    
+                    thought_text = f"[Контекст определен] Запрос относится к файлу «{file_name}». Буду искать только в нём."
+                    step_data = {'type': 'thought', 'content': thought_text}
+                    steps_history.append(step_data)
+                    yield f"data: {json.dumps(step_data)}\n\n"
+                    
+                    # CRUCIAL: Override the request's file_id with our finding.
+                    request.file_id = contextual_file_id 
+                else:
+                    thought_text = "[Контекст не определен] Запрос является общим. Буду искать по всей базе знаний."
+                    step_data = {'type': 'thought', 'content': thought_text}
+                    steps_history.append(step_data)
+                    yield f"data: {json.dumps(step_data)}\n\n"
+
+            # --- END OF NEW BLOCK ---
             
             initial_prompt = request.message
             if request.file_id:
