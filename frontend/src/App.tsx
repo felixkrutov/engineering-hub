@@ -457,7 +457,9 @@ function App() {
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}}
                 />
                 {isLoading && currentJobId && (
-                  <button className="cancel-btn" onClick={handleCancelJob}>Отменить</button>
+                  <button className="cancel-btn" onClick={handleCancelJob} title="Отменить">
+                      <FaTimes />
+                  </button>
                 )}
                 <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
                   {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
