@@ -14,7 +14,8 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from apscheduler.schedulers.background import BackgroundScheduler
-from google.api_core.exceptions import ResourceExhausted
+from google.api_core.exceptions import ResourceExhausted, InternalServerError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from openai import AsyncOpenAI
 
 from kb_service.connector import MockConnector
@@ -110,6 +111,62 @@ def list_all_files_summary() -> str:
     except Exception as e:
         logger.error(f"Error in list_all_files_summary tool: {e}", exc_info=True)
         return f"ОШИБКА: Не удалось получить список файлов: {e}"
+
+
+# A robust retry decorator for all Google API calls
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((ResourceExhausted, InternalServerError))
+)
+async def run_with_retry(func, *args, **kwargs):
+    """Executes an async function with a retry policy for specific API errors."""
+    return await func(*args, **kwargs)
+
+
+async def determine_file_context(user_message: str, all_files: List[Dict]) -> Optional[str]:
+    """
+    Analyzes the user's message to determine if it refers to a specific file.
+    Returns the file_id if a match is found, otherwise None.
+    """
+    if not all_files:
+        return None
+
+    files_summary = "\n".join([f"- Имя файла: '{f.get('name', 'N/A')}', ID: '{f.get('id', 'N/A')}'" for f in all_files])
+    
+    prompt = f"""You are a classification assistant. Your task is to determine if the user's query refers to a specific file from the provided list.
+
+Here is the list of available files:
+<file_list>
+{files_summary}
+</file_list>
+
+Here is the user's query:
+<user_query>
+{user_message}
+</user_query>
+
+Analyze the user's query. If it explicitly or implicitly refers to one of the files from the list, respond with ONLY the file's ID (e.g., "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d").
+If the query does not refer to any specific file, respond with the exact word "None". Do not provide any other text or explanation.
+"""
+    try:
+        context_model = genai.GenerativeModel('gemini-1.5-flash')
+        # Use the retry helper for the API call
+        response = await run_with_retry(context_model.generate_content_async, prompt)
+        
+        file_id_match = response.text.strip()
+        
+        # Validate that the returned ID is one of the available file IDs
+        available_ids = {f.get('id') for f in all_files}
+        if file_id_match in available_ids:
+            logger.info(f"Context analysis determined the query refers to file_id: {file_id_match}")
+            return file_id_match
+        else:
+            logger.info("Context analysis did not find a specific file reference.")
+            return None
+    except Exception as e:
+        logger.error(f"Error during context determination: {e}")
+        return None
 
 
 app = FastAPI()
@@ -272,8 +329,23 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
                 steps_history.append({'type': 'thought', 'content': step_content})
                 yield f"data: {json.dumps(steps_history[-1])}\n\n"
 
+                # --- CONTEXT ANALYSIS (FIXED) ---
+                if iteration == 0 and not request.file_id:
+                    context_analysis_thought = {'type': 'thought', 'content': '[Анализ] Определяю, относится ли запрос к конкретному файлу...'}
+                    steps_history.append(context_analysis_thought)
+                    yield f"data: {json.dumps(context_analysis_thought)}\n\n"
+                    all_files = kb_indexer.get_all_files()
+                    contextual_file_id = await determine_file_context(request.message, all_files)
+                    if contextual_file_id:
+                        request.file_id = contextual_file_id
+                        context_thought = {'type': 'thought', 'content': f"[Анализ] Контекст определен. Работа будет вестись с файлом ID: {contextual_file_id}"}
+                        steps_history.append(context_thought)
+                        yield f"data: {json.dumps(context_thought)}\n\n"
+
                 prompt_for_executor = request.message
-                if iteration > 0:
+                if iteration == 0 and request.file_id: # Add context instruction only once
+                    prompt_for_executor += f"\n\n[Контекст определен] Работай с файлом ID: {request.file_id}."
+                elif iteration > 0:
                     prompt_for_executor = f"""Your previous answer was reviewed and requires changes. Please generate a new, improved final-quality response that addresses the following feedback.
 <feedback>
 {feedback_from_controller}
@@ -292,7 +364,8 @@ The original user query was:
                 )
                 chat_session = model.start_chat(history=[]) # Start fresh for each iteration
                 
-                response = await chat_session.send_message_async(prompt_for_executor)
+                # --- Executor's call with retry ---
+                response = await run_with_retry(chat_session.send_message_async, prompt_for_executor)
                 executor_answer = "Исполнитель не смог сформировать ответ на данной итерации."
                 tool_context = "" # Reset context for this iteration
 
@@ -321,7 +394,8 @@ The original user query was:
 
                         tool_context += f"Вызов инструмента {fc.name} с аргументами {fc.args} дал результат:\n{tool_result}\n\n"
 
-                        response = await chat_session.send_message_async(
+                        # --- Recursive call with retry ---
+                        response = await run_with_retry(chat_session.send_message_async,
                             gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result}))
                         )
                     elif hasattr(part, 'text') and part.text:
@@ -392,7 +466,7 @@ Your response MUST be a valid JSON object with two keys: "is_approved" (boolean)
              try:
                 title_prompt = f"Summarize the following conversation in 5 words or less in Russian. User: {request.message}\nAI: {final_answer_text}\n\nTitle:"
                 title_model = genai.GenerativeModel('gemini-1.5-flash')
-                title_response = await title_model.generate_content_async(title_prompt)
+                title_response = await run_with_retry(title_model.generate_content_async, title_prompt)
                 chat_title = title_response.text.strip().replace('"', '')
                 title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
                 with open(title_file_path, 'w', encoding='utf-8') as f:
