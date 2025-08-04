@@ -321,7 +321,7 @@ function App() {
               const chatResponse = await fetch(`${API_BASE_URL}/v1/chats`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ initial_message: messageText }),
+                  body: JSON.stringify({ title: messageText.substring(0, 50) || "Новый чат" }),
               });
               if (!chatResponse.ok) throw new Error('Failed to create a new chat.');
               
