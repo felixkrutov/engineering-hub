@@ -1,3 +1,5 @@
+# frontend/src/App.tsx
+
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
 import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, FaCog } from 'react-icons/fa';
@@ -399,13 +401,13 @@ function App() {
                   messages.map((msg, index) => (
                       <div key={msg.id} className={`message-block ${msg.role} ${msg.content.length > 0 && msg.content === msg.displayedContent ? 'done' : ''}`}>
                           <div className="message-content">
-                              <p className="content">{msg.displayedContent}</p>
                               {msg.role === 'model' && msg.thinking_steps && msg.thinking_steps.length > 0 && (
                                 <AgentThoughts
                                   steps={msg.thinking_steps}
                                   defaultCollapsed={!(index === messages.length - 1 && isLoading)}
                                 />
                               )}
+                              <p className="content">{msg.displayedContent}</p>
                           </div>
                       </div>
                   ))
