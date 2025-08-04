@@ -301,12 +301,13 @@ body[data-theme="light"] .app-wrapper,
     color: var(--text-secondary);
     font-size: 16px;
     cursor: pointer;
-    transition: background-color 0.2s ease;
+    transition: all 0.2s ease;
     margin-left: 0.75rem;
 }
 
 .cancel-btn:hover {
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: rgba(220, 53, 69, 0.15);
+    color: #e06c75;
 }
 
 .send-btn {
