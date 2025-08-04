@@ -17,6 +17,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from google.api_core.exceptions import ResourceExhausted, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from openai import AsyncOpenAI
+import redis
 
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
@@ -27,6 +28,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+# --- Redis Client Initialization ---
+redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=6379, db=0, decode_responses=True)
 
 # --- Knowledge Base Services Initialization ---
 YANDEX_TOKEN = os.getenv("YANDEX_DISK_API_TOKEN")
@@ -224,6 +228,9 @@ class Message(BaseModel):
     parts: List[str]
     thinking_steps: Optional[List[ThinkingStep]] = None
 
+class JobCreationResponse(BaseModel):
+    job_id: str
+
 
 # --- API Endpoints ---
 def load_config() -> AppConfig:
@@ -288,197 +295,37 @@ async def list_chats():
             chats.append(ChatInfo(id=conversation_id, title=title))
     return sorted(chats, key=lambda item: os.path.getmtime(os.path.join(HISTORY_DIR, f"{item.id}.json")), reverse=True)
 
+@app.post("/api/v1/jobs", response_model=JobCreationResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_chat_job(request: ChatRequest):
+    job_id = f"job:{uuid.uuid4()}"
+    
+    # Create the job payload for the worker
+    job_data = request.model_dump_json()
 
-@app.post("/api/v1/chat/stream")
-async def stream_chat(request: ChatRequest) -> StreamingResponse:
-    async def event_generator():
-        steps_history: List[Dict[str, Any]] = []
-        final_answer_text = "Произошла ошибка при обработке ответа."
+    # Create initial status in a Redis Hash
+    initial_status = {
+        "status": "queued",
+        "thoughts": json.dumps([{"type": "info", "content": "Задача поставлена в очередь..."}]),
+        "final_answer": ""
+    }
+    
+    redis_client.hset(job_id, mapping=initial_status)
+    
+    # Push the job details to the worker queue
+    redis_client.lpush("job_queue", json.dumps({"job_id": job_id, "payload": job_data}))
+    
+    logger.info(f"Job {job_id} created and queued for conversation {request.conversation_id}.")
+    return JobCreationResponse(job_id=job_id)
 
-        conversation_id = request.conversation_id
-        os.makedirs(HISTORY_DIR, exist_ok=True)
-        history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-
-        history = []
-        if not os.path.exists(history_file_path):
-            with open(history_file_path, 'w', encoding='utf-8') as f:
-                json.dump([], f)
-        
-        try:
-            with open(history_file_path, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            logger.warning(f"Could not read or parse history for {conversation_id}, starting fresh.")
-            history = []
-        
-        try:
-            config = load_config()
-            MAX_ITERATIONS = 3
-            feedback_from_controller = ""
-            final_approved_answer = "Агент не смог сформировать ответ."
-            tool_context = ""
-            
-            for iteration in range(MAX_ITERATIONS):
-                # --- STAGE 1: EXECUTOR (AI1) ---
-                step_content = f"[Исполнитель][Итерация {iteration+1}/{MAX_ITERATIONS}] "
-                if iteration > 0:
-                    step_content += f"Получены правки от контроля качества. Начинаю доработку..."
-                else:
-                    step_content += "Анализирую запрос и готовлю ответ..."
-                
-                steps_history.append({'type': 'thought', 'content': step_content})
-                yield f"data: {json.dumps(steps_history[-1])}\n\n"
-
-                # --- CONTEXT ANALYSIS (FIXED) ---
-                if iteration == 0 and not request.file_id:
-                    context_analysis_thought = {'type': 'thought', 'content': '[Анализ] Определяю, относится ли запрос к конкретному файлу...'}
-                    steps_history.append(context_analysis_thought)
-                    yield f"data: {json.dumps(context_analysis_thought)}\n\n"
-                    all_files = kb_indexer.get_all_files()
-                    contextual_file_id = await determine_file_context(request.message, all_files)
-                    if contextual_file_id:
-                        request.file_id = contextual_file_id
-                        context_thought = {'type': 'thought', 'content': f"[Анализ] Контекст определен. Работа будет вестись с файлом ID: {contextual_file_id}"}
-                        steps_history.append(context_thought)
-                        yield f"data: {json.dumps(context_thought)}\n\n"
-
-                prompt_for_executor = request.message
-                if iteration == 0 and request.file_id: # Add context instruction only once
-                    prompt_for_executor += f"\n\n[Контекст определен] Работай с файлом ID: {request.file_id}."
-                elif iteration > 0:
-                    prompt_for_executor = f"""Your previous answer was reviewed and requires changes. Please generate a new, improved final-quality response that addresses the following feedback.
-<feedback>
-{feedback_from_controller}
-</feedback>
-
-The original user query was:
-<original_query>
-{request.message}
-</original_query>
-"""
-                
-                model = genai.GenerativeModel(
-                    model_name=config.executor.model_name,
-                    tools=[analyze_document, search_knowledge_base, list_all_files_summary],
-                    system_instruction=config.executor.system_prompt
-                )
-                chat_session = model.start_chat(history=[]) # Start fresh for each iteration
-                
-                # --- Executor's call with retry ---
-                response = await run_with_retry(chat_session.send_message_async, prompt_for_executor)
-                executor_answer = "Исполнитель не смог сформировать ответ на данной итерации."
-                tool_context = "" # Reset context for this iteration
-
-                # --- Executor's internal tool-use loop ---
-                while True:
-                    if not response.candidates:
-                        executor_answer = "Модель-исполнитель не вернула кандидатов."
-                        break
-                    
-                    part = response.candidates[0].content.parts[0]
-                    
-                    if hasattr(part, 'function_call') and part.function_call.name:
-                        fc = part.function_call
-                        tool_map = {
-                            "analyze_document": analyze_document,
-                            "search_knowledge_base": search_knowledge_base,
-                            "list_all_files_summary": list_all_files_summary,
-                        }
-                        
-                        tool_func = tool_map.get(fc.name)
-                        if not tool_func:
-                            tool_result = f"Ошибка: Неизвестный инструмент '{fc.name}'."
-                        else:
-                            # Safely call the function with its arguments
-                            tool_result = tool_func(**fc.args)
-
-                        tool_context += f"Вызов инструмента {fc.name} с аргументами {fc.args} дал результат:\n{tool_result}\n\n"
-
-                        # --- Recursive call with retry ---
-                        response = await run_with_retry(chat_session.send_message_async,
-                            gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result}))
-                        )
-                    elif hasattr(part, 'text') and part.text:
-                        executor_answer = part.text
-                        break
-                    else:
-                        executor_answer = "Модель-исполнитель вернула пустой ответ."
-                        break
-                
-                final_approved_answer = executor_answer
-
-                # --- STAGE 2: CONTROLLER (AI2) ---
-                if not controller_client:
-                    logger.info("Controller client not configured. Approving answer by default.")
-                    break
-
-                step_data = {'type': 'thought', 'content': f"[Контроль][Итерация {iteration+1}] Проверяю качество ответа..."}
-                steps_history.append(step_data)
-                yield f"data: {json.dumps(step_data)}\n\n"
-
-                controller_prompt = f"""You are a Quality Control auditor. Your task is to review the response generated by an Engineer AI.
-The original user query was: <user_query>{request.message}</user_query>
-The Engineer AI used its tools and retrieved this context: <retrieved_context>{tool_context if tool_context else "None"}</retrieved_context>
-The Engineer AI produced this answer: <answer_to_review>{executor_answer}</answer_to_review>
-Critically evaluate the answer. Is it complete, accurate, and fully addresses the user's query?
-Your response MUST be a valid JSON object with two keys: "is_approved" (boolean) and "feedback" (string). If the answer is perfect, set "is_approved" to true. If it needs any improvement, set it to false and provide concise, actionable feedback.
-"""
-                
-                controller_model = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
-                controller_response = await controller_client.chat.completions.create(
-                    model=controller_model,
-                    messages=[{"role": "system", "content": config.controller.system_prompt}, {"role": "user", "content": controller_prompt}],
-                    response_format={"type": "json_object"}
-                )
-                review_data = json.loads(controller_response.choices[0].message.content)
-                
-                if review_data.get("is_approved"):
-                    step_data = {'type': 'thought', 'content': f"[Контроль][Итерация {iteration+1}] Качество подтверждено."}
-                    steps_history.append(step_data); yield f"data: {json.dumps(step_data)}\n\n"
-                    break # EXIT THE LOOP
-                else:
-                    feedback_from_controller = review_data.get("feedback", "Необходимо внести улучшения.")
-                    step_data = {'type': 'thought', 'content': f"[Контроль][Итерация {iteration+1}] Обнаружены недочеты. Комментарий: {feedback_from_controller}"}
-                    steps_history.append(step_data); yield f"data: {json.dumps(step_data)}\n\n"
-                    if iteration == MAX_ITERATIONS - 1:
-                        logger.warning("Max iterations reached. Using the last available answer.")
-
-        except Exception as e:
-            logger.error(f"Critical error in Quality Control Loop: {e}", exc_info=True)
-            final_approved_answer = f"Критическая ошибка в цикле обработки: {e}"
-
-        # --- FINALIZATION STAGE ---
-        final_answer_text = final_approved_answer
-        
-        user_message = Message(role="user", parts=[request.message])
-        model_message = Message(role="model", parts=[final_answer_text], thinking_steps=[ThinkingStep(**step) for step in steps_history])
-        
-        history.append(user_message.model_dump(exclude_none=True))
-        history.append(model_message.model_dump(exclude_none=True))
-
-        try:
-            with open(history_file_path, 'w', encoding='utf-8') as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"CRITICAL: Failed to save chat history for {conversation_id}: {e}", exc_info=True)
-        
-        if len(history) == 2:
-             try:
-                title_prompt = f"Summarize the following conversation in 5 words or less in Russian. User: {request.message}\nAI: {final_answer_text}\n\nTitle:"
-                title_model = genai.GenerativeModel('gemini-1.5-flash')
-                title_response = await run_with_retry(title_model.generate_content_async, title_prompt)
-                chat_title = title_response.text.strip().replace('"', '')
-                title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
-                with open(title_file_path, 'w', encoding='utf-8') as f:
-                    f.write(chat_title)
-             except Exception as e:
-                logger.warning(f"An error occurred during title generation: {e}")
-
-        final_data = {'type': 'final_answer', 'content': final_answer_text}
-        yield f"data: {json.dumps(final_data)}\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
+@app.get("/api/v1/jobs/{job_id}/status")
+async def get_job_status(job_id: str):
+    job_data = redis_client.hgetall(job_id)
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Deserialize the thoughts list
+    job_data['thoughts'] = json.loads(job_data.get('thoughts', '[]'))
+    return JSONResponse(content=job_data)
 
 @app.get("/api/v1/chats/{conversation_id}")
 async def get_chat_history(conversation_id: str):
