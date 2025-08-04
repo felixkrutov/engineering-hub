@@ -1,3 +1,4 @@
+# backend/main.py
 import logging
 import os
 import json
@@ -235,8 +236,8 @@ class JobCreationResponse(BaseModel):
 # --- API Endpoints ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
-        executor=AgentSettings(model_name='gemini-1.5-pro', system_prompt=''),
-        controller=AgentSettings(model_name='gpt-4o-mini', system_prompt=CONTROLLER_SYSTEM_PROMPT)
+        executor=AgentSettings(model_name='gemini-2.5-pro', system_prompt='You are a helpful assistant.'),
+        controller=AgentSettings(model_name='o4-mini', system_prompt='You are a helpful assistant.')
     )
     if not os.path.exists(CONFIG_FILE):
         return default_config
