@@ -196,7 +196,7 @@ app.add_middleware(
 )
 
 HISTORY_DIR = "chat_histories"
-CONFIG_FILE = "config.json"
+CONFIG_FILE = "/app_config/config.json"
 CONTROLLER_SYSTEM_PROMPT = "You are a helpful assistant."
 
 # --- Pydantic Models ---
@@ -254,6 +254,8 @@ def load_config() -> AppConfig:
         return default_config
 
 def save_config(config: AppConfig):
+    # Ensure the directory exists before writing
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config.model_dump(), f, indent=2, ensure_ascii=False)
 
