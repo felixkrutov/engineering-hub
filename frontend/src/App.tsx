@@ -1,5 +1,3 @@
-# frontend/src/App.tsx
-
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
 import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, FaCog } from 'react-icons/fa';
