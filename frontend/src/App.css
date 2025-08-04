@@ -262,18 +262,24 @@ body[data-theme="light"] .app-wrapper,
     margin: 0 auto;
     position: relative;
     display: flex;
-    align-items: flex-end;
-    background-color: var(--bg-input);
-    border: 1px solid var(--bg-input-border);
-    border-radius: 12px;
-    padding: 0.75rem;
+    flex-direction: column; /* Stack top and bottom rows vertically */
+    background-color: #343a40; /* Your input background color */
+    border-radius: 18px; /* Slightly less rounded might look better */
+    padding: 10px;
+    border: 1px solid #495057;
+}
+
+.input-top-row {
+    display: flex;
+    align-items: flex-end; /* Align to bottom for multi-line text */
+    width: 100%;
 }
 
 .user-input {
-    flex-grow: 1;
-    background-color: transparent;
-    color: var(--text-primary);
+    flex: 1; /* Makes it take up all available horizontal space */
+    background: transparent;
     border: none;
+    color: var(--text-primary);
     padding: 0.25rem;
     font-size: 1rem;
     resize: none;
@@ -322,6 +328,39 @@ body[data-theme="light"] .app-wrapper,
     background-color: #6a1bcd; /* Darken accent color on hover */
 }
 .send-btn:disabled { background-color: #555; cursor: not-allowed; }
+
+.input-bottom-toolbar {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    margin-top: 8px; /* Space between textarea and toolbar */
+    padding-top: 8px; /* Optional space with a line */
+    border-top: 1px solid #495057; /* Separator line */
+}
+
+.mode-toggle-btn {
+    background-color: transparent;
+    border: 1px solid #5a5a5a;
+    color: #adb5bd;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 15px;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+}
+
+.mode-toggle-btn:hover {
+    border-color: #8e44ad;
+    color: #d0a3e8;
+}
+
+/* This is the crucial 'ON' state */
+.mode-toggle-btn.active {
+    background-color: #8e44ad;
+    color: #ffffff;
+    border-color: #8e44ad;
+}
 
 .welcome-screen {
     display: flex;
@@ -773,35 +812,4 @@ body[data-theme="light"] .app-wrapper,
   padding: 4px 12px !important; /* Override default padding for a smaller button */
   font-size: 0.8rem !important;
   flex-shrink: 0; /* Prevents button from shrinking */
-}
-
-.mode-selector-container {
-    display: flex;
-    justify-content: flex-end;
-    padding-right: 15px;
-    margin-top: 4px;
-}
-
-.mode-toggle-btn {
-    background-color: transparent;
-    border: 1px solid #5a5a5a;
-    color: #adb5bd;
-    padding: 4px 12px;
-    font-size: 12px;
-    font-weight: 500;
-    border-radius: 15px;
-    cursor: pointer;
-    transition: all 0.2s ease-in-out;
-}
-
-.mode-toggle-btn:hover {
-    border-color: #8e44ad;
-    color: #d0a3e8;
-}
-
-/* This is the crucial 'ON' state */
-.mode-toggle-btn.active {
-    background-color: #8e44ad;
-    color: #ffffff;
-    border-color: #8e44ad;
 }
