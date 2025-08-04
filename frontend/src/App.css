@@ -775,31 +775,33 @@ body[data-theme="light"] .app-wrapper,
   flex-shrink: 0; /* Prevents button from shrinking */
 }
 
-.mode-selector {
+.mode-selector-container {
     display: flex;
     justify-content: flex-end;
-    align-items: center;
-    padding-right: 12px;
-    margin-bottom: -5px; /* Adjust to pull it closer to the input box */
-    font-size: 13px;
+    padding-right: 15px;
+    margin-top: 4px;
+}
+
+.mode-toggle-btn {
+    background-color: transparent;
+    border: 1px solid #5a5a5a;
     color: #adb5bd;
-}
-
-.mode-selector label {
-    display: flex;
-    align-items: center;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 15px;
     cursor: pointer;
-    padding: 5px;
-    border-radius: 4px;
-    transition: background-color 0.2s ease;
-    user-select: none; /* Prevents text selection on click */
+    transition: all 0.2s ease-in-out;
 }
 
-.mode-selector label:hover {
-    background-color: rgba(255, 255, 255, 0.05);
+.mode-toggle-btn:hover {
+    border-color: #8e44ad;
+    color: #d0a3e8;
 }
 
-.mode-selector input[type="checkbox"] {
-    margin-right: 8px;
-    cursor: pointer;
+/* This is the crucial 'ON' state */
+.mode-toggle-btn.active {
+    background-color: #8e44ad;
+    color: #ffffff;
+    border-color: #8e44ad;
 }
