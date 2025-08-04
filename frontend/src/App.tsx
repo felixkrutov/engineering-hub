@@ -75,9 +75,6 @@ function App() {
   const [kbFilesError, setKbFilesError] = useState<string | null>(null);
 
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
-  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[] | null>(null);
-  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
-  const [isFinalizing, setIsFinalizing] = useState<string | null>(null);
 
   const [modalState, setModalState] = useState<ModalState>({
     visible: false, title: '', message: '', showInput: false, inputValue: '', confirmText: 'OK', onConfirm: () => {},
@@ -85,6 +82,8 @@ function App() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const userInputRef = useRef<HTMLTextAreaElement>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
 
   useEffect(() => {
     if (isSettingsModalOpen && config) {
@@ -126,7 +125,6 @@ function App() {
     }
   };
 
-  // --- INSTRUCTION: Fixed handleSaveSettings function ---
   const handleSaveSettings = async () => {
     if (!dirtyConfig) return;
     setIsSaving(true);
@@ -134,11 +132,9 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/v1/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // This is the CRITICAL fix: send the entire nested dirtyConfig object
         body: JSON.stringify(dirtyConfig),
       });
       if (!response.ok) throw new Error('Failed to save settings');
-      // On success, update the "saved" config state with the new values
       setConfig(JSON.parse(JSON.stringify(dirtyConfig)));
     } catch(error) {
       console.error("Save settings failed:", error);
@@ -225,63 +221,103 @@ function App() {
     const messageText = userInput.trim();
     if (!messageText || isLoading) return;
 
+    if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+    }
+
     setIsLoading(true);
     setUserInput('');
 
     const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText, displayedContent: messageText };
-    const isNewChat = currentChatId === null;
+    
+    const isNewChat = !currentChatId;
     const conversationId = currentChatId || uuidv4();
+    if (isNewChat) {
+      setCurrentChatId(conversationId);
+    }
+
+    const modelMessage: Message = { 
+        id: uuidv4(), 
+        role: 'model', 
+        content: '', 
+        displayedContent: '', 
+        thinking_steps: [{ type: 'info', content: 'Задача поставлена в очередь...' }]
+    };
     
-    const tempModelMessageId = uuidv4();
-    const tempModelMessage: Message = { id: tempModelMessageId, role: 'model', content: '', displayedContent: '' };
-    setMessages(prev => [...prev, userMessage, tempModelMessage]);
-    setStreamingMessageId(tempModelMessageId);
-    
-    const liveThinkingSteps: ThinkingStep[] = [];
-    setThinkingSteps(liveThinkingSteps);
+    setMessages(prev => [...prev, userMessage, modelMessage]);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/chat/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: messageText, conversation_id: conversationId, file_id: activeFileId }),
-      });
-      setActiveFileId(null);
+        // --- Phase 1: Create the Job ---
+        const createJobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: messageText,
+                conversation_id: conversationId,
+                file_id: activeFileId,
+            }),
+        });
+        setActiveFileId(null);
 
-      if (!response.ok || !response.body) throw new Error(`Streaming failed: ${response.status}`);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-        for (const part of parts) {
-          if (part.startsWith('data: ')) {
-            const jsonString = part.substring(6);
-            try {
-              const data = JSON.parse(jsonString);
-              if (data.type === 'final_answer') {
-                setIsFinalizing(tempModelMessageId);
-                setMessages(currentMessages => currentMessages.map(m => m.id === tempModelMessageId ? { ...m, content: data.content, thinking_steps: liveThinkingSteps } : m));
-                setTimeout(() => { setThinkingSteps(null); setStreamingMessageId(null); setIsFinalizing(null); }, 500);
-                if (isNewChat) { setCurrentChatId(conversationId); await loadChats(); }
-              } else {
-                liveThinkingSteps.push(data);
-                setThinkingSteps([...liveThinkingSteps]);
-              }
-            } catch (e) { console.error("JSON parse error:", e, "Payload:", jsonString); }
-          }
+        if (!createJobResponse.ok) {
+            const errorData = await createJobResponse.text();
+            throw new Error(`Failed to create job: ${errorData}`);
         }
-      }
+
+        const { job_id } = await createJobResponse.json();
+
+        // --- Phase 2: Poll for Status ---
+        pollIntervalRef.current = setInterval(async () => {
+            try {
+                const statusResponse = await fetch(`${API_BASE_URL}/v1/jobs/${job_id}/status`);
+                if (!statusResponse.ok) {
+                    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                    throw new Error(`Polling failed with status: ${statusResponse.status}`);
+                }
+
+                const jobStatus = await statusResponse.json();
+
+                setMessages(currentMessages => currentMessages.map(msg => {
+                    if (msg.id === modelMessage.id) {
+                        const updatedMsg = { ...msg, thinking_steps: jobStatus.thoughts };
+                        if (jobStatus.status === 'complete' && msg.content !== jobStatus.final_answer) {
+                            updatedMsg.content = jobStatus.final_answer || '';
+                        }
+                        return updatedMsg;
+                    }
+                    return msg;
+                }));
+
+                // --- Stop Condition ---
+                if (jobStatus.status === 'complete' || jobStatus.status === 'failed') {
+                    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                    setIsLoading(false);
+
+                    if (jobStatus.status === 'failed') {
+                        setMessages(currentMessages => currentMessages.map(msg => 
+                            msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Обработка задачи завершилась с ошибкой.', displayedContent: 'Обработка задачи завершилась с ошибкой.' } : msg
+                        ));
+                    }
+                    if (isNewChat) {
+                        await loadChats();
+                    }
+                }
+            } catch (error) {
+                console.error('Polling error:', error);
+                if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                setIsLoading(false);
+                setMessages(currentMessages => currentMessages.map(msg => 
+                    msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Ошибка при получении статуса задачи.', displayedContent: 'Ошибка при получении статуса задачи.' } : msg
+                ));
+            }
+        }, 2000); // Poll every 2 seconds
+
     } catch (error) {
-        console.error("Streaming chat failed:", error);
-        setMessages(prev => prev.map(msg => msg.id === tempModelMessageId ? { ...msg, role: 'error', content: 'Ошибка потоковой передачи ответа.', displayedContent: 'Ошибка потоковой передачи ответа.' } : msg));
-    } finally {
+        console.error('Job creation error:', error);
         setIsLoading(false);
+        setMessages(currentMessages => currentMessages.map(msg => 
+            msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Не удалось создать задачу для обработки.', displayedContent: 'Не удалось создать задачу для обработки.' } : msg
+        ));
     }
   };
 
@@ -323,7 +359,7 @@ function App() {
     });
   };
 
-  useEffect(scrollToBottom, [messages, thinkingSteps, isFinalizing]);
+  useEffect(scrollToBottom, [messages]);
   useEffect(adjustTextareaHeight, [userInput]);
 
   const handleThemeToggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
@@ -365,12 +401,16 @@ function App() {
               {messages.length === 0 ? (
                   <div className="welcome-screen"><h1>Mossa AI</h1><p>Начните новый диалог или выберите существующий</p></div>
               ) : (
-                  messages.map(msg => (
+                  messages.map((msg, index) => (
                       <div key={msg.id} className={`message-block ${msg.role} ${msg.content.length > 0 && msg.content === msg.displayedContent ? 'done' : ''}`}>
                           <div className="message-content">
-                              {msg.thinking_steps && msg.thinking_steps.length > 0 && <AgentThoughts steps={msg.thinking_steps} defaultCollapsed={true} />}
+                              {msg.thinking_steps && msg.thinking_steps.length > 0 && (
+                                  <AgentThoughts 
+                                      steps={msg.thinking_steps}
+                                      defaultCollapsed={!(index === messages.length - 1 && isLoading)} 
+                                  />
+                              )}
                               <p className="content">{msg.displayedContent}</p>
-                              {msg.id === streamingMessageId && thinkingSteps && <AgentThoughts steps={thinkingSteps} defaultCollapsed={false} isFinalizing={isFinalizing === msg.id} />}
                           </div>
                       </div>
                   ))
