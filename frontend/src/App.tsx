@@ -56,6 +56,7 @@ function App() {
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [userInput, setUserInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('ai');
@@ -178,6 +179,7 @@ function App() {
 
   const startNewChat = () => {
     setCurrentChatId(null);
+    setCurrentJobId(null);
     setMessages([]);
     setActiveFileId(null);
   };
@@ -223,11 +225,13 @@ function App() {
     setIsLoading(true);
     setUserInput('');
 
-    const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText, displayedContent: messageText };
-    
     const isNewChat = !currentChatId;
-    const conversationId = currentChatId || uuidv4();
+    const conversationId = isNewChat ? uuidv4() : currentChatId!;
+    const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText, displayedContent: messageText };
+
     if (isNewChat) {
+      const newChatPlaceholder = { id: conversationId, title: messageText.substring(0, 50) || "Новый чат" };
+      setChats(prev => [newChatPlaceholder, ...prev]);
       setCurrentChatId(conversationId);
     }
 
@@ -239,10 +243,9 @@ function App() {
         thinking_steps: [{ type: 'info', content: 'Задача поставлена в очередь...' }]
     };
     
-    setMessages(prev => [...prev, userMessage, modelMessage]);
+    setMessages(prev => isNewChat ? [userMessage, modelMessage] : [...prev, userMessage, modelMessage]);
 
     try {
-        // --- Phase 1: Create the Job ---
         const createJobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -260,13 +263,14 @@ function App() {
         }
 
         const { job_id } = await createJobResponse.json();
+        setCurrentJobId(job_id);
 
-        // --- Phase 2: Poll for Status ---
         pollIntervalRef.current = setInterval(async () => {
             try {
                 const statusResponse = await fetch(`${API_BASE_URL}/v1/jobs/${job_id}/status`);
                 if (!statusResponse.ok) {
                     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                    setCurrentJobId(null);
                     throw new Error(`Polling failed with status: ${statusResponse.status}`);
                 }
 
@@ -283,10 +287,10 @@ function App() {
                     return msg;
                 }));
 
-                // --- Stop Condition ---
                 if (jobStatus.status === 'complete' || jobStatus.status === 'failed') {
                     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                     setIsLoading(false);
+                    setCurrentJobId(null);
 
                     if (jobStatus.status === 'failed') {
                         setMessages(currentMessages => currentMessages.map(msg => 
@@ -301,18 +305,52 @@ function App() {
                 console.error('Polling error:', error);
                 if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                 setIsLoading(false);
+                setCurrentJobId(null);
                 setMessages(currentMessages => currentMessages.map(msg => 
                     msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Ошибка при получении статуса задачи.', displayedContent: 'Ошибка при получении статуса задачи.' } : msg
                 ));
             }
-        }, 2000); // Poll every 2 seconds
+        }, 2000);
 
     } catch (error) {
         console.error('Job creation error:', error);
         setIsLoading(false);
+        setCurrentJobId(null);
         setMessages(currentMessages => currentMessages.map(msg => 
             msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Не удалось создать задачу для обработки.', displayedContent: 'Не удалось создать задачу для обработки.' } : msg
         ));
+    }
+  };
+
+  const handleCancelJob = async () => {
+    if (!currentJobId) return;
+
+    try {
+      await fetch(`${API_BASE_URL}/v1/jobs/${currentJobId}/cancel`, {
+        method: 'POST',
+      });
+
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+      setIsLoading(false);
+      setCurrentJobId(null);
+
+      setMessages(prev => {
+        const lastMessage = prev[prev.length - 1];
+        if (lastMessage && lastMessage.role === 'model') {
+          const updatedLastMessage = { 
+            ...lastMessage, 
+            content: 'Запрос отменен пользователем.',
+            displayedContent: 'Запрос отменен пользователем.',
+            thinking_steps: [...(lastMessage.thinking_steps || []), { type: 'error', content: 'Запрос отменен пользователем.' }]
+          };
+          return [...prev.slice(0, -1), updatedLastMessage];
+        }
+        return prev;
+      });
+    } catch (error) {
+      console.error("Failed to cancel job:", error);
     }
   };
 
@@ -418,6 +456,9 @@ function App() {
                   value={userInput} onChange={(e) => setUserInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}}
                 />
+                {isLoading && currentJobId && (
+                  <button className="cancel-btn" onClick={handleCancelJob}>Отменить</button>
+                )}
                 <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
                   {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
                 </button>
