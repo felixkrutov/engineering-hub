@@ -1,5 +1,3 @@
-# frontend/src/components/AgentThoughts.tsx
-
 import React, { useState, useRef, useEffect } from 'react';
 
 export interface Thought {
