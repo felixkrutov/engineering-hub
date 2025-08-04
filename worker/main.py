@@ -176,7 +176,7 @@ async def determine_file_context(user_message: str, all_files: List[Dict]) -> Op
     files_summary = "\n".join([f"- Имя файла: '{f.get('name', 'N/A')}', ID: '{f.get('id', 'N/A')}'" for f in all_files])
     prompt = f"You are a classification assistant... (full prompt from original file)... If it refers to one of the files from the list, respond with ONLY the file's ID... If not, respond with 'None'."
     try:
-        context_model = genai.GenerativeModel('gemini-2.5-flash')
+        context_model = genai.GenerativeModel('gemini-1.5-flash')
         response = await run_with_retry(context_model.generate_content_async, prompt)
         file_id_match = response.text.strip()
         if file_id_match in {f.get('id') for f in all_files}:
@@ -211,12 +211,11 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
             return
 
         # STAGE 1: EXECUTOR
-        step_content = f"[Исполнитель][Итерация {iteration+1}/{MAX_ITERATIONS}] "
-        step_content += "Получены правки от контроля качества. Начинаю доработку..." if iteration > 0 else "Анализирую запрос и готовлю ответ..."
+        step_content = "Получены правки от контроля качества. Начинаю доработку..." if iteration > 0 else "Формулирую предварительный ответ..."
         update_job_status(r_client, job_id, new_thought=step_content)
 
         if iteration == 0 and not request_file_id:
-            update_job_status(r_client, job_id, new_thought="[Анализ] Определяю, относится ли запрос к файлу...")
+            update_job_status(r_client, job_id, new_thought="Анализирую контекст запроса, ищу отсылки к документам...")
             all_files = kb_indexer.get_all_files()
             contextual_file_id = await determine_file_context(request_message, all_files)
             if contextual_file_id:
@@ -251,7 +250,7 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
                 tool_func = tool_map.get(fc.name)
                 tool_result = tool_func(**fc.args) if tool_func else f"Ошибка: Неизвестный инструмент '{fc.name}'."
                 tool_context += f"Вызов {fc.name} с {fc.args} дал результат:\n{tool_result}\n\n"
-                update_job_status(r_client, job_id, new_thought=f"Использую инструмент: {fc.name}({fc.args})")
+                update_job_status(r_client, job_id, new_thought=f"Обращаюсь к базе знаний с запросом: {fc.args.get('query', '...')}")
                 response = await run_with_retry(chat_session.send_message_async, gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result})))
             elif hasattr(part, 'text') and part.text:
                 executor_answer = part.text
@@ -269,14 +268,14 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
             logger.info(f"Job {job_id} was cancelled before controller. Aborting.")
             return
 
-        update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Проверяю качество...")
+        update_job_status(r_client, job_id, new_thought="Отправляю на проверку качества ответа")
         controller_prompt = f"User query: <user_query>{request_message}</user_query>\nRetrieved context: <retrieved_context>{tool_context or 'None'}</retrieved_context>\nAnswer to review: <answer_to_review>{executor_answer}</answer_to_review>\nIs the answer complete and accurate? Respond with JSON: {{'is_approved': boolean, 'feedback': string}}."
         controller_model_name = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
         controller_response = await controller_client.chat.completions.create(model=controller_model_name, messages=[{"role": "system", "content": config.controller.system_prompt}, {"role": "user", "content": controller_prompt}], response_format={"type": "json_object"})
         review_data = json.loads(controller_response.choices[0].message.content)
 
         if review_data.get("is_approved"):
-            update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Качество подтверждено.")
+            update_job_status(r_client, job_id, new_thought="Ответ прошел проверку качества.")
             break
         else:
             feedback_from_controller = review_data.get("feedback", "Требуются улучшения.")
@@ -315,8 +314,8 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
     request_message = request_payload['message']
     conversation_id = request_payload['conversation_id']
 
-    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-2.5-flash'...")
-    model = genai.GenerativeModel(model_name='gemini-2.5-flash')
+    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-1.5-flash'...")
+    model = genai.GenerativeModel(model_name='gemini-1.5-flash')
     chat_session = model.start_chat(history=[])
 
     update_job_status(r_client, job_id, new_thought="Отправка запроса в модель...")
@@ -355,10 +354,10 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
         use_agent_mode = request_payload.get('use_agent_mode', False)
 
         if use_agent_mode:
-            update_job_status(r_client, job_id, new_thought="[Маршрутизатор] 'Режим агента' активен. Запускаю полный цикл качества...")
+            update_job_status(r_client, job_id, new_thought="Активирован 'Режим агента'. Запускаю протокол глубокого анализа.")
             await handle_complex_task(job_id, request_payload, r_client, config)
         else:
-            update_job_status(r_client, job_id, new_thought="[Маршрутизатор] Простой режим. Генерирую прямой ответ...")
+            update_job_status(r_client, job_id, new_thought="Простой режим. Генерирую прямой ответ...")
             await handle_simple_chat(job_id, request_payload, r_client, config)
 
     except Exception as e:
@@ -382,7 +381,7 @@ async def main_worker_loop():
                 continue
 
             logger.info(f"Picked up job: {job_id}")
-            update_job_status(redis_client, job_id, new_thought="Задача получена, начинаю обработку.", status="processing")
+            update_job_status(redis_client, job_id, new_thought="Задача в работе. Подключаю вычислительные ресурсы...", status="processing")
 
             await process_ai_task(job_id, payload, redis_client)
 
