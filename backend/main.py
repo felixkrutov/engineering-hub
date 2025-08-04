@@ -213,6 +213,9 @@ class ChatRequest(BaseModel):
     file_id: Optional[str] = None
     use_agent_mode: bool = False # <-- ADD THIS LINE
 
+class CreateChatRequest(BaseModel):
+    title: str
+
 class ChatInfo(BaseModel):
     id: str
     title: str
@@ -297,6 +300,27 @@ async def list_chats():
                     pass
             chats.append(ChatInfo(id=conversation_id, title=title))
     return sorted(chats, key=lambda item: os.path.getmtime(os.path.join(HISTORY_DIR, f"{item.id}.json")), reverse=True)
+
+@app.post("/api/v1/chats", response_model=ChatInfo, status_code=status.HTTP_201_CREATED)
+async def create_new_chat(request: CreateChatRequest):
+    conversation_id = str(uuid.uuid4())
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
+
+    try:
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        # Create an empty history file to "reserve" the chat's existence
+        with open(history_file_path, 'w', encoding='utf-8') as f:
+            json.dump([], f)
+        # Create the title file using the provided title
+        with open(title_file_path, 'w', encoding='utf-8') as f:
+            f.write(request.title)
+        
+        logger.info(f"Successfully created and registered new chat with ID: {conversation_id}")
+        return ChatInfo(id=conversation_id, title=request.title)
+    except OSError as e:
+        logger.error(f"Failed to create chat files for {conversation_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create chat files.")
 
 @app.post("/api/v1/jobs", response_model=JobCreationResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_chat_job(request: ChatRequest):
