@@ -211,6 +211,7 @@ class ChatRequest(BaseModel):
     message: str
     conversation_id: str
     file_id: Optional[str] = None
+    use_agent_mode: bool = False # <-- ADD THIS LINE
 
 class ChatInfo(BaseModel):
     id: str
