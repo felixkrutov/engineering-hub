@@ -1,4 +1,3 @@
-# worker/main.py
 import os
 import time
 import logging
@@ -54,19 +53,37 @@ os.makedirs(HISTORY_DIR, exist_ok=True)
 # --- Redis Helper Functions ---
 def update_job_status(r_client: redis.Redis, job_id: str, new_thought: str = None, final_answer: str = None, status: str = None):
     try:
-        current_thoughts_raw = r_client.hget(job_id, "thoughts")
-        current_thoughts = json.loads(current_thoughts_raw) if current_thoughts_raw else []
+        update_data = {}
+        
+        # Always handle thoughts update, it's the main purpose of this function during processing
         if new_thought:
+            current_thoughts_raw = r_client.hget(job_id, "thoughts")
+            current_thoughts = json.loads(current_thoughts_raw) if current_thoughts_raw else []
             current_thoughts.append({"type": "thought", "content": new_thought})
+            update_data["thoughts"] = json.dumps(current_thoughts)
 
-        update_data = {"thoughts": json.dumps(current_thoughts)}
-        if final_answer is not None:
-            update_data["final_answer"] = final_answer
-        if status is not None:
-            update_data["status"] = status
+        # Check current status first to prevent overwriting a terminal state
+        current_job_status = r_client.hget(job_id, "status")
+        is_terminal = current_job_status in ["complete", "failed", "cancelled"]
 
+        if is_terminal:
+            logger.warning(f"Job {job_id} is in a terminal state ({current_job_status}). Only updating thoughts.")
+        else:
+            # Only add final_answer and status if the job is not in a terminal state
+            if final_answer is not None:
+                update_data["final_answer"] = final_answer
+            if status is not None:
+                update_data["status"] = status
+
+        # If nothing is left to update, exit.
+        if not update_data:
+            return
+            
         r_client.hset(job_id, mapping=update_data)
-        logger.info(f"Updated status for {job_id}: status={status}, new_thought='{new_thought}'")
+
+        log_status = status if not is_terminal else f"(ignored, state is {current_job_status})"
+        logger.info(f"Updated job {job_id}: new_thought='{new_thought}', status='{log_status}'")
+
     except Exception as e:
         logger.error(f"Failed to update status for job {job_id}: {e}")
 
@@ -174,6 +191,11 @@ async def determine_file_context(user_message: str, all_files: List[Dict]) -> Op
 async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Redis):
     try:
         config = load_config()
+
+        if r_client.hget(job_id, "status") == "cancelled":
+            logger.info(f"Job {job_id} was cancelled. Aborting before processing.")
+            return
+            
         MAX_ITERATIONS = 3
         feedback_from_controller = ""
         final_approved_answer = "Агент не смог сформировать ответ."
@@ -183,6 +205,10 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
         conversation_id = request_payload['conversation_id']
 
         for iteration in range(MAX_ITERATIONS):
+            if r_client.hget(job_id, "status") == "cancelled":
+                logger.info(f"Job {job_id} was cancelled during iteration {iteration + 1}. Aborting.")
+                return
+
             # STAGE 1: EXECUTOR
             step_content = f"[Исполнитель][Итерация {iteration+1}/{MAX_ITERATIONS}] "
             step_content += "Получены правки от контроля качества. Начинаю доработку..." if iteration > 0 else "Анализирую запрос и готовлю ответ..."
@@ -213,6 +239,9 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
             tool_context = ""
 
             while True:
+                if r_client.hget(job_id, "status") == "cancelled":
+                    logger.info(f"Job {job_id} was cancelled during tool use. Aborting.")
+                    return
                 if not response.candidates: break
                 part = response.candidates[0].content.parts[0]
                 if hasattr(part, 'function_call') and part.function_call.name:
@@ -235,6 +264,10 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
                 update_job_status(r_client, job_id, new_thought="Контроль качества пропущен (не настроен).")
                 break
             
+            if r_client.hget(job_id, "status") == "cancelled":
+                logger.info(f"Job {job_id} was cancelled before controller. Aborting.")
+                return
+
             update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Проверяю качество...")
             controller_prompt = f"User query: <user_query>{request_message}</user_query>\nRetrieved context: <retrieved_context>{tool_context or 'None'}</retrieved_context>\nAnswer to review: <answer_to_review>{executor_answer}</answer_to_review>\nIs the answer complete and accurate? Respond with JSON: {{'is_approved': boolean, 'feedback': string}}."
             controller_model_name = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
