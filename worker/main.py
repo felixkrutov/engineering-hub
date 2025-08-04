@@ -181,14 +181,12 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
         request_message = request_payload['message']
         request_file_id = request_payload.get('file_id')
         conversation_id = request_payload['conversation_id']
-        steps_history = []
 
         for iteration in range(MAX_ITERATIONS):
             # STAGE 1: EXECUTOR
             step_content = f"[Исполнитель][Итерация {iteration+1}/{MAX_ITERATIONS}] "
             step_content += "Получены правки от контроля качества. Начинаю доработку..." if iteration > 0 else "Анализирую запрос и готовлю ответ..."
             update_job_status(r_client, job_id, new_thought=step_content)
-            steps_history.append({'type': 'thought', 'content': step_content})
 
             if iteration == 0 and not request_file_id:
                 update_job_status(r_client, job_id, new_thought="[Анализ] Определяю, относится ли запрос к файлу...")
@@ -262,7 +260,14 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
             with open(history_file_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
         user_message = Message(role="user", parts=[request_message])
-        model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in steps_history])
+        
+        # Fetch final thoughts from Redis as the single source of truth
+        final_thoughts_raw = r_client.hget(job_id, "thoughts")
+        final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+
+        # Now create the model message with the complete data
+        model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+
         history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
         
         # Ensure directory exists before writing history
