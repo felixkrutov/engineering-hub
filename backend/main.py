@@ -1,4 +1,3 @@
-# backend/main.py
 import logging
 import os
 import json
@@ -329,6 +328,16 @@ async def get_job_status(job_id: str):
     # Deserialize the thoughts list
     job_data['thoughts'] = json.loads(job_data.get('thoughts', '[]'))
     return JSONResponse(content=job_data)
+
+@app.post("/api/v1/jobs/{job_id}/cancel", status_code=status.HTTP_200_OK)
+async def cancel_job(job_id: str):
+    if not redis_client.exists(job_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    
+    redis_client.hset(job_id, "status", "cancelled")
+    
+    logger.info(f"Job {job_id} cancellation request received and status set to 'cancelled'.")
+    return JSONResponse(content={"status": "cancellation_requested", "job_id": job_id})
 
 @app.get("/api/v1/chats/{conversation_id}")
 async def get_chat_history(conversation_id: str):
