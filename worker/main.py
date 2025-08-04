@@ -20,7 +20,8 @@ load_dotenv()
 
 # --- Load all necessary components from kb_service ---
 # The docker-compose volume mount makes this possible: `...:/app/kb_service`
-from kb_service.connector import YandexDiskConnector, MockConnector
+from kb_service.connector import MockConnector
+from kb_service.yandex_connector import YandexDiskConnector
 from kb_service.indexer import KnowledgeBaseIndexer
 
 # --- Pydantic Models ---
