@@ -33,3 +33,4 @@ Thumbs.db
 # --- Настройки IDE/Редакторов ---
 .idea/
 .vscode/
+chat_histories/
