@@ -57,6 +57,7 @@ function App() {
   const [userInput, setUserInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
+  const [isAgentMode, setIsAgentMode] = useState(false);
   
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('ai');
@@ -253,6 +254,7 @@ function App() {
                 message: messageText,
                 conversation_id: conversationId,
                 file_id: activeFileId,
+                use_agent_mode: isAgentMode, // <-- ADD THIS LINE
             }),
         });
         setActiveFileId(null);
@@ -450,6 +452,17 @@ function App() {
               )}
             </div>
             <div className="input-area-wrapper">
+              <div className="mode-selector">
+                <label htmlFor="agent-mode-toggle">
+                  <input 
+                    type="checkbox" 
+                    id="agent-mode-toggle"
+                    checked={isAgentMode} 
+                    onChange={(e) => setIsAgentMode(e.target.checked)}
+                  />
+                  Режим агента
+                </label>
+              </div>
               <div className="input-area">
                 <textarea
                   ref={userInputRef} className="user-input" placeholder="Спросите что-нибудь..." rows={1}
