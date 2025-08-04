@@ -282,6 +282,27 @@ body[data-theme="light"] .app-wrapper,
 }
 .user-input::placeholder { color: var(--text-secondary); }
 
+.cancel-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    margin-left: 0.75rem;
+}
+
+.cancel-btn:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
 .send-btn {
     position: static;
     flex-shrink: 0;
@@ -289,12 +310,16 @@ body[data-theme="light"] .app-wrapper,
     width: 32px; height: 32px;
     background: var(--accent-color);
     border: none;
-    border-radius: 5px;
+    border-radius: 50%;
     color: white;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: background-color 0.2s ease;
+}
+.send-btn:hover:not(:disabled) {
+    background-color: #6a1bcd; /* Darken accent color on hover */
 }
 .send-btn:disabled { background-color: #555; cursor: not-allowed; }
 
