@@ -1,8 +1,10 @@
+# frontend/src/App.tsx
+
 import React, { useState, useEffect, useRef } from 'react';
 import { ClipLoader } from 'react-spinners';
 import { FaPaperPlane, FaBars, FaTimes, FaPencilAlt, FaTrashAlt, FaSun, FaMoon, FaCog } from 'react-icons/fa';
 import { v4 as uuidv4 } from 'uuid';
-import AgentThoughts from './components/AgentThoughts';
+import AgentThoughts, { Thought } from './components/AgentThoughts';
 import './App.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/hub/api';
@@ -12,17 +14,12 @@ interface Chat {
   title: string;
 }
 
-interface ThinkingStep {
-  type: string;
-  content: string;
-}
-
 interface Message {
   id: string;
   role: 'user' | 'model' | 'error';
   content: string;
   displayedContent: string;
-  thinking_steps?: ThinkingStep[];
+  thinking_steps?: Thought[];
 }
 
 interface ModalState {
@@ -404,13 +401,13 @@ function App() {
                   messages.map((msg, index) => (
                       <div key={msg.id} className={`message-block ${msg.role} ${msg.content.length > 0 && msg.content === msg.displayedContent ? 'done' : ''}`}>
                           <div className="message-content">
-                              {msg.thinking_steps && msg.thinking_steps.length > 0 && (
-                                  <AgentThoughts 
-                                      steps={msg.thinking_steps}
-                                      defaultCollapsed={!(index === messages.length - 1 && isLoading)} 
-                                  />
-                              )}
                               <p className="content">{msg.displayedContent}</p>
+                              {msg.role === 'model' && msg.thinking_steps && msg.thinking_steps.length > 0 && (
+                                <AgentThoughts
+                                  steps={msg.thinking_steps}
+                                  defaultCollapsed={!(index === messages.length - 1 && isLoading)}
+                                />
+                              )}
                           </div>
                       </div>
                   ))
