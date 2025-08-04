@@ -254,7 +254,7 @@ function App() {
                 message: messageText,
                 conversation_id: conversationId,
                 file_id: activeFileId,
-                use_agent_mode: isAgentMode, // <-- ADD THIS LINE
+                use_agent_mode: isAgentMode,
             }),
         });
         setActiveFileId(null);
@@ -452,17 +452,6 @@ function App() {
               )}
             </div>
             <div className="input-area-wrapper">
-              <div className="mode-selector">
-                <label htmlFor="agent-mode-toggle">
-                  <input 
-                    type="checkbox" 
-                    id="agent-mode-toggle"
-                    checked={isAgentMode} 
-                    onChange={(e) => setIsAgentMode(e.target.checked)}
-                  />
-                  Режим агента
-                </label>
-              </div>
               <div className="input-area">
                 <textarea
                   ref={userInputRef} className="user-input" placeholder="Спросите что-нибудь..." rows={1}
@@ -477,6 +466,16 @@ function App() {
                 <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
                   {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
                 </button>
+              </div>
+
+              {/* NEW: Add this container and button AFTER the input-area */}
+              <div className="mode-selector-container">
+                  <button
+                      className={`mode-toggle-btn ${isAgentMode ? 'active' : ''}`}
+                      onClick={() => setIsAgentMode(!isAgentMode)}
+                  >
+                      Режим агента
+                  </button>
               </div>
             </div>
           </div>
