@@ -45,7 +45,7 @@ class Message(BaseModel):
 
 # --- Constants ---
 HISTORY_DIR = "/app/chat_histories"
-CONFIG_FILE = "/app/config.json"
+CONFIG_FILE = "/app_config/config.json"
 CONTROLLER_SYSTEM_PROMPT = "You are a helpful assistant."
 
 os.makedirs(HISTORY_DIR, exist_ok=True)
@@ -264,6 +264,9 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
         user_message = Message(role="user", parts=[request_message])
         model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in steps_history])
         history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
+        
+        # Ensure directory exists before writing history
+        os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
         with open(history_file_path, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
         
