@@ -188,127 +188,178 @@ async def determine_file_context(user_message: str, all_files: List[Dict]) -> Op
         return None
 
 # --- AI Core Logic ---
+
+async def handle_complex_task(job_id: str, request_payload: dict, r_client: redis.Redis, config: AppConfig):
+    """
+    Handles the full agentic workflow with tools, iterations, and quality control.
+    """
+    if r_client.hget(job_id, "status") == "cancelled":
+        logger.info(f"Job {job_id} was cancelled. Aborting before processing.")
+        return
+        
+    MAX_ITERATIONS = 3
+    feedback_from_controller = ""
+    final_approved_answer = "Агент не смог сформировать ответ."
+    tool_context = ""
+    request_message = request_payload['message']
+    request_file_id = request_payload.get('file_id')
+    conversation_id = request_payload['conversation_id']
+
+    for iteration in range(MAX_ITERATIONS):
+        if r_client.hget(job_id, "status") == "cancelled":
+            logger.info(f"Job {job_id} was cancelled during iteration {iteration + 1}. Aborting.")
+            return
+
+        # STAGE 1: EXECUTOR
+        step_content = f"[Исполнитель][Итерация {iteration+1}/{MAX_ITERATIONS}] "
+        step_content += "Получены правки от контроля качества. Начинаю доработку..." if iteration > 0 else "Анализирую запрос и готовлю ответ..."
+        update_job_status(r_client, job_id, new_thought=step_content)
+
+        if iteration == 0 and not request_file_id:
+            update_job_status(r_client, job_id, new_thought="[Анализ] Определяю, относится ли запрос к файлу...")
+            all_files = kb_indexer.get_all_files()
+            contextual_file_id = await determine_file_context(request_message, all_files)
+            if contextual_file_id:
+                request_file_id = contextual_file_id
+                update_job_status(r_client, job_id, new_thought=f"[Анализ] Контекст определен. Работа с файлом ID: {contextual_file_id}")
+
+        prompt_for_executor = request_message
+        if iteration == 0 and request_file_id:
+            prompt_for_executor += f"\n\n[Контекст определен] Работай с файлом ID: {request_file_id}."
+        elif iteration > 0:
+            prompt_for_executor = f"Your previous answer requires changes. Feedback: {feedback_from_controller}. Original query: {request_message}"
+        
+        model = genai.GenerativeModel(
+            model_name=config.executor.model_name,
+            tools=[analyze_document, search_knowledge_base, list_all_files_summary],
+            system_instruction=config.executor.system_prompt
+        )
+        chat_session = model.start_chat(history=[])
+        response = await run_with_retry(chat_session.send_message_async, prompt_for_executor)
+        executor_answer = "Исполнитель не смог сформировать ответ."
+        tool_context = ""
+
+        while True:
+            if r_client.hget(job_id, "status") == "cancelled":
+                logger.info(f"Job {job_id} was cancelled during tool use. Aborting.")
+                return
+            if not response.candidates: break
+            part = response.candidates[0].content.parts[0]
+            if hasattr(part, 'function_call') and part.function_call.name:
+                fc = part.function_call
+                tool_map = {"analyze_document": analyze_document, "search_knowledge_base": search_knowledge_base, "list_all_files_summary": list_all_files_summary}
+                tool_func = tool_map.get(fc.name)
+                tool_result = tool_func(**fc.args) if tool_func else f"Ошибка: Неизвестный инструмент '{fc.name}'."
+                tool_context += f"Вызов {fc.name} с {fc.args} дал результат:\n{tool_result}\n\n"
+                update_job_status(r_client, job_id, new_thought=f"Использую инструмент: {fc.name}({fc.args})")
+                response = await run_with_retry(chat_session.send_message_async, gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result})))
+            elif hasattr(part, 'text') and part.text:
+                executor_answer = part.text
+                break
+            else: break
+        
+        final_approved_answer = executor_answer
+
+        # STAGE 2: CONTROLLER
+        if not controller_client:
+            update_job_status(r_client, job_id, new_thought="Контроль качества пропущен (не настроен).")
+            break
+        
+        if r_client.hget(job_id, "status") == "cancelled":
+            logger.info(f"Job {job_id} was cancelled before controller. Aborting.")
+            return
+
+        update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Проверяю качество...")
+        controller_prompt = f"User query: <user_query>{request_message}</user_query>\nRetrieved context: <retrieved_context>{tool_context or 'None'}</retrieved_context>\nAnswer to review: <answer_to_review>{executor_answer}</answer_to_review>\nIs the answer complete and accurate? Respond with JSON: {{'is_approved': boolean, 'feedback': string}}."
+        controller_model_name = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
+        controller_response = await controller_client.chat.completions.create(model=controller_model_name, messages=[{"role": "system", "content": config.controller.system_prompt}, {"role": "user", "content": controller_prompt}], response_format={"type": "json_object"})
+        review_data = json.loads(controller_response.choices[0].message.content)
+
+        if review_data.get("is_approved"):
+            update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Качество подтверждено.")
+            break
+        else:
+            feedback_from_controller = review_data.get("feedback", "Требуются улучшения.")
+            update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Обнаружены недочеты: {feedback_from_controller}")
+            if iteration == MAX_ITERATIONS - 1:
+                logger.warning("Max iterations reached for job {job_id}. Using the last answer.")
+
+    # FINALIZATION STAGE
+    update_job_status(r_client, job_id, final_answer=final_approved_answer, status="complete")
+    
+    # Save chat history
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    history = []
+    if os.path.exists(history_file_path):
+        with open(history_file_path, 'r', encoding='utf-8') as f:
+            history = json.load(f)
+    user_message = Message(role="user", parts=[request_message])
+    
+    final_thoughts_raw = r_client.hget(job_id, "thoughts")
+    final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+
+    model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+
+    history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
+    
+    os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
+    with open(history_file_path, 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+    
+    logger.info(f"Complex task for job {job_id} finished successfully and history saved.")
+
+async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis.Redis, config: AppConfig):
+    """
+    Handles a direct, non-agentic chat request for a fast response.
+    """
+    request_message = request_payload['message']
+    conversation_id = request_payload['conversation_id']
+
+    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-1.5-flash'...")
+    model = genai.GenerativeModel(model_name='gemini-1.5-flash')
+    chat_session = model.start_chat(history=[])
+
+    update_job_status(r_client, job_id, new_thought="Отправка запроса в модель...")
+    response = await run_with_retry(chat_session.send_message_async, request_message)
+    final_answer = response.text
+
+    update_job_status(r_client, job_id, new_thought="Ответ сгенерирован в простом режиме.", final_answer=final_answer, status="complete")
+
+    # Save chat history
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    history = []
+    if os.path.exists(history_file_path):
+        with open(history_file_path, 'r', encoding='utf-8') as f:
+            history = json.load(f)
+    
+    user_message = Message(role="user", parts=[request_message])
+    
+    final_thoughts_raw = r_client.hget(job_id, "thoughts")
+    final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+
+    model_message = Message(role="model", parts=[final_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+
+    history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
+    
+    os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
+    with open(history_file_path, 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+    
+    logger.info(f"Simple chat for job {job_id} finished successfully and history saved.")
+
+
 async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Redis):
     try:
         config = load_config()
+        # Get the flag from the payload, defaulting to False for safety
+        use_agent_mode = request_payload.get('use_agent_mode', False)
 
-        if r_client.hget(job_id, "status") == "cancelled":
-            logger.info(f"Job {job_id} was cancelled. Aborting before processing.")
-            return
-            
-        MAX_ITERATIONS = 3
-        feedback_from_controller = ""
-        final_approved_answer = "Агент не смог сформировать ответ."
-        tool_context = ""
-        request_message = request_payload['message']
-        request_file_id = request_payload.get('file_id')
-        conversation_id = request_payload['conversation_id']
-
-        for iteration in range(MAX_ITERATIONS):
-            if r_client.hget(job_id, "status") == "cancelled":
-                logger.info(f"Job {job_id} was cancelled during iteration {iteration + 1}. Aborting.")
-                return
-
-            # STAGE 1: EXECUTOR
-            step_content = f"[Исполнитель][Итерация {iteration+1}/{MAX_ITERATIONS}] "
-            step_content += "Получены правки от контроля качества. Начинаю доработку..." if iteration > 0 else "Анализирую запрос и готовлю ответ..."
-            update_job_status(r_client, job_id, new_thought=step_content)
-
-            if iteration == 0 and not request_file_id:
-                update_job_status(r_client, job_id, new_thought="[Анализ] Определяю, относится ли запрос к файлу...")
-                all_files = kb_indexer.get_all_files()
-                contextual_file_id = await determine_file_context(request_message, all_files)
-                if contextual_file_id:
-                    request_file_id = contextual_file_id
-                    update_job_status(r_client, job_id, new_thought=f"[Анализ] Контекст определен. Работа с файлом ID: {contextual_file_id}")
-
-            prompt_for_executor = request_message
-            if iteration == 0 and request_file_id:
-                prompt_for_executor += f"\n\n[Контекст определен] Работай с файлом ID: {request_file_id}."
-            elif iteration > 0:
-                prompt_for_executor = f"Your previous answer requires changes. Feedback: {feedback_from_controller}. Original query: {request_message}"
-            
-            model = genai.GenerativeModel(
-                model_name=config.executor.model_name,
-                tools=[analyze_document, search_knowledge_base, list_all_files_summary],
-                system_instruction=config.executor.system_prompt
-            )
-            chat_session = model.start_chat(history=[])
-            response = await run_with_retry(chat_session.send_message_async, prompt_for_executor)
-            executor_answer = "Исполнитель не смог сформировать ответ."
-            tool_context = ""
-
-            while True:
-                if r_client.hget(job_id, "status") == "cancelled":
-                    logger.info(f"Job {job_id} was cancelled during tool use. Aborting.")
-                    return
-                if not response.candidates: break
-                part = response.candidates[0].content.parts[0]
-                if hasattr(part, 'function_call') and part.function_call.name:
-                    fc = part.function_call
-                    tool_map = {"analyze_document": analyze_document, "search_knowledge_base": search_knowledge_base, "list_all_files_summary": list_all_files_summary}
-                    tool_func = tool_map.get(fc.name)
-                    tool_result = tool_func(**fc.args) if tool_func else f"Ошибка: Неизвестный инструмент '{fc.name}'."
-                    tool_context += f"Вызов {fc.name} с {fc.args} дал результат:\n{tool_result}\n\n"
-                    update_job_status(r_client, job_id, new_thought=f"Использую инструмент: {fc.name}({fc.args})")
-                    response = await run_with_retry(chat_session.send_message_async, gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result})))
-                elif hasattr(part, 'text') and part.text:
-                    executor_answer = part.text
-                    break
-                else: break
-            
-            final_approved_answer = executor_answer
-
-            # STAGE 2: CONTROLLER
-            if not controller_client:
-                update_job_status(r_client, job_id, new_thought="Контроль качества пропущен (не настроен).")
-                break
-            
-            if r_client.hget(job_id, "status") == "cancelled":
-                logger.info(f"Job {job_id} was cancelled before controller. Aborting.")
-                return
-
-            update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Проверяю качество...")
-            controller_prompt = f"User query: <user_query>{request_message}</user_query>\nRetrieved context: <retrieved_context>{tool_context or 'None'}</retrieved_context>\nAnswer to review: <answer_to_review>{executor_answer}</answer_to_review>\nIs the answer complete and accurate? Respond with JSON: {{'is_approved': boolean, 'feedback': string}}."
-            controller_model_name = os.getenv("CONTROLLER_MODEL_NAME") or config.controller.model_name
-            controller_response = await controller_client.chat.completions.create(model=controller_model_name, messages=[{"role": "system", "content": config.controller.system_prompt}, {"role": "user", "content": controller_prompt}], response_format={"type": "json_object"})
-            review_data = json.loads(controller_response.choices[0].message.content)
-
-            if review_data.get("is_approved"):
-                update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Качество подтверждено.")
-                break
-            else:
-                feedback_from_controller = review_data.get("feedback", "Требуются улучшения.")
-                update_job_status(r_client, job_id, new_thought=f"[Контроль][Итерация {iteration+1}] Обнаружены недочеты: {feedback_from_controller}")
-                if iteration == MAX_ITERATIONS - 1:
-                    logger.warning("Max iterations reached for job {job_id}. Using the last answer.")
-
-        # FINALIZATION STAGE
-        update_job_status(r_client, job_id, final_answer=final_approved_answer, status="complete")
-        
-        # Save chat history
-        history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-        history = []
-        if os.path.exists(history_file_path):
-            with open(history_file_path, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-        user_message = Message(role="user", parts=[request_message])
-        
-        # Fetch final thoughts from Redis as the single source of truth
-        final_thoughts_raw = r_client.hget(job_id, "thoughts")
-        final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
-
-        # Now create the model message with the complete data
-        model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
-
-        history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
-        
-        # Ensure directory exists before writing history
-        os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
-        with open(history_file_path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"Job {job_id} finished successfully and history saved.")
+        if use_agent_mode:
+            update_job_status(r_client, job_id, new_thought="[Маршрутизатор] 'Режим агента' активен. Запускаю полный цикл качества...")
+            await handle_complex_task(job_id, request_payload, r_client, config)
+        else:
+            update_job_status(r_client, job_id, new_thought="[Маршрутизатор] Простой режим. Генерирую прямой ответ...")
+            await handle_simple_chat(job_id, request_payload, r_client, config)
 
     except Exception as e:
         logger.error(f"Critical error during AI task for job {job_id}: {e}", exc_info=True)
