@@ -176,7 +176,7 @@ async def determine_file_context(user_message: str, all_files: List[Dict]) -> Op
     files_summary = "\n".join([f"- Имя файла: '{f.get('name', 'N/A')}', ID: '{f.get('id', 'N/A')}'" for f in all_files])
     prompt = f"You are a classification assistant... (full prompt from original file)... If it refers to one of the files from the list, respond with ONLY the file's ID... If not, respond with 'None'."
     try:
-        context_model = genai.GenerativeModel('gemini-1.5-flash')
+        context_model = genai.GenerativeModel('gemini-2.5-flash')
         response = await run_with_retry(context_model.generate_content_async, prompt)
         file_id_match = response.text.strip()
         if file_id_match in {f.get('id') for f in all_files}:
@@ -315,8 +315,8 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
     request_message = request_payload['message']
     conversation_id = request_payload['conversation_id']
 
-    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-1.5-flash'...")
-    model = genai.GenerativeModel(model_name='gemini-1.5-flash')
+    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-2.5-flash'...")
+    model = genai.GenerativeModel(model_name='gemini-2.5-flash')
     chat_session = model.start_chat(history=[])
 
     update_job_status(r_client, job_id, new_thought="Отправка запроса в модель...")
