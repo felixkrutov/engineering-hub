@@ -1,12 +1,14 @@
+# frontend/src/components/AgentThoughts.tsx
+
 import React, { useState, useRef, useEffect } from 'react';
 
-interface Step {
+export interface Thought {
   type: string;
   content: string;
 }
 
 interface AgentThoughtsProps {
-  steps: Step[] | null;
+  steps: Thought[] | null;
   defaultCollapsed: boolean;
   isFinalizing?: boolean;
 }
