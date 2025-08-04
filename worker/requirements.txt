@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+google-generativeai>=0.5.0
+python-magic
+apscheduler
+yadisk
+pypdf
+python-docx
+openpyxl
+rarfile
+faiss-cpu
+numpy
+langchain
+openai
+redis
