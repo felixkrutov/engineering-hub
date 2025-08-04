@@ -1,68 +1,54 @@
+# docker-compose.yml
+
 version: '3.8'
 
 services:
-  db:
-    image: postgres:15-alpine
-    container_name: engineering-hub-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    # Порт 5432 не нужно выставлять наружу, если к БД не подключаются извне сети Docker.
-
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: engineering-hub-backend
-    restart: unless-stopped
-    depends_on:
-      - db
-    env_file:
-      - .env
-    # --- INSTRUCTION: Corrected volumes section ---
-    volumes:
-      # Этот volume для разработки (live-reload) теперь правильно обрабатывает и
-      # chat_histories, и config.json, которые будут созданы внутри ./backend на хосте.
-      - ./backend:/app
-      # Некорректная и конфликтующая строка "./chat_histories:/app/chat_histories" была удалена.
-      # Этот volume для мок-данных остается без изменений.
-      - ./mock_disk:/app/mock_disk
-
-  frontend:
-    build: ./frontend
-    container_name: engineering-hub-frontend
-    # [ИСПРАВЛЕНО] Добавляем restart, чтобы сервис был более устойчив.
-    restart: unless-stopped
-    depends_on:
-      - backend
-    # Том с конфигом Nginx для фронтенда здесь больше не нужен,
-    # так как Dockerfile фронтенда уже копирует статику в образ Nginx.
-    # Если у вас отдельный Dockerfile для frontend, который собирает статику,
-    # и отдельный образ nginx, который ее использует, то все в порядке.
-    # Судя по вашим логам сборки, у вас многоступенчатая сборка, что правильно.
-
+  # Nginx remains the same
   nginx:
-    build: ./nginx
     container_name: engineering-hub-nginx
+    image: nginx:alpine
+    restart: unless-stopped
     ports:
-      # Системный Nginx обращается на 127.0.0.1:8081, а этот порт маппится на порт 80 внутри контейнера.
-      - "8081:80"
+      - "80:80"
+      - "443:443"
     volumes:
-      - ./nginx/wait-for-it.sh:/app/wait-for-it.sh
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - backend
       - frontend
-    command: >
-      sh -c "
-        chmod +x /app/wait-for-it.sh && \
-        /app/wait-for-it.sh backend:8000 --timeout=60 --strict -- \
-        nginx -g 'daemon off;'
-      "
 
-volumes:
-  postgres_data:
-    name: engineering-hub_postgres_data
+  # Frontend remains the same
+  frontend:
+    container_name: engineering-hub-frontend
+    build: ./frontend
+    restart: unless-stopped
+
+  # Backend gets modified
+  backend:
+    container_name: engineering-hub-backend
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - redis # NEW DEPENDENCY
+
+  # NEW SERVICE: Redis
+  redis:
+    container_name: engineering-hub-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+
+  # NEW SERVICE: Worker
+  worker:
+    container_name: engineering-hub-worker
+    build: ./worker # It will have its own Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./worker:/app
+      - ./backend/kb_service:/app/kb_service # Share the knowledge base service code
+    depends_on:
+      - redis
