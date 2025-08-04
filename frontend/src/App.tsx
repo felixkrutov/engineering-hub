@@ -157,25 +157,105 @@ function App() {
       console.error("Ошибка загрузки чатов:", error);
     }
   };
-  
+
+  const startPolling = (jobId: string, modelMessageId: string, isNewChat: boolean) => {
+      if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+      }
+
+      const poll = async () => {
+          try {
+              const statusResponse = await fetch(`${API_BASE_URL}/v1/jobs/${jobId}/status`);
+              if (!statusResponse.ok) {
+                  throw new Error(`Polling failed with status: ${statusResponse.status}`);
+              }
+              const jobStatus = await statusResponse.json();
+
+              setMessages(currentMessages => currentMessages.map(msg => {
+                  if (msg.id === modelMessageId) {
+                      const updatedMsg = { ...msg, thinking_steps: jobStatus.thoughts };
+                      if (jobStatus.status === 'complete' && msg.content !== jobStatus.final_answer) {
+                          updatedMsg.content = jobStatus.final_answer || '';
+                      }
+                      return updatedMsg;
+                  }
+                  return msg;
+              }));
+
+              if (['complete', 'failed', 'cancelled'].includes(jobStatus.status)) {
+                  if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                  setIsLoading(false);
+                  setCurrentJobId(null);
+
+                  if (jobStatus.status === 'failed') {
+                      setMessages(currentMessages => currentMessages.map(msg =>
+                          msg.id === modelMessageId ? { ...msg, role: 'error', content: 'Обработка задачи завершилась с ошибкой.', displayedContent: 'Обработка задачи завершилась с ошибкой.' } : msg
+                      ));
+                  }
+                  if (isNewChat && jobStatus.status === 'complete') {
+                      await loadChats();
+                  }
+              }
+          } catch (error) {
+              console.error('Polling error:', error);
+              if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+              setIsLoading(false);
+              setCurrentJobId(null);
+              setMessages(currentMessages => currentMessages.map(msg =>
+                  msg.id === modelMessageId ? { ...msg, role: 'error', content: 'Ошибка при получении статуса задачи.', displayedContent: 'Ошибка при получении статуса задачи.' } : msg
+              ));
+          }
+      };
+
+      pollIntervalRef.current = setInterval(poll, 2000);
+  };
+
   const selectChat = async (chatId: string) => {
-    if (isLoading) return;
-    setIsLoading(true);
-    setCurrentChatId(chatId);
-    try {
-      const response = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
-      if (!response.ok) throw new Error("Chat history not found");
-      const rawMessages: any[] = await response.json();
-      const formattedMessages: Message[] = rawMessages.map(m => ({
-          id: uuidv4(), role: m.role, content: m.content, displayedContent: m.content, thinking_steps: m.thinking_steps
-      }));
-      setMessages(formattedMessages);
-    } catch(error) {
-      console.error("Failed to select chat:", error);
-      setMessages([{ id: uuidv4(), role: 'error', content: 'Could not load this chat.', displayedContent: 'Could not load this chat.' }]);
-    } finally {
-      setIsLoading(false);
-    }
+      if (isLoading && currentJobId) return;
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+
+      setCurrentChatId(chatId);
+      setMessages([]);
+      setIsLoading(true);
+
+      try {
+          const historyResponse = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
+          if (!historyResponse.ok) throw new Error("Chat history not found");
+
+          const rawMessages: any[] = await historyResponse.json();
+          const formattedMessages: Message[] = rawMessages.map(m => ({
+              id: m.id || uuidv4(), role: m.role, content: m.content || '',
+              displayedContent: m.content || '', thinking_steps: m.thinking_steps || []
+          }));
+          setMessages(formattedMessages);
+
+          const activeJobResponse = await fetch(`${API_BASE_URL}/v1/chats/${chatId}/active_job`);
+          if (!activeJobResponse.ok) {
+              console.warn(`Could not check for active job on chat ${chatId}`);
+              setIsLoading(false);
+              return;
+          }
+          const { job_id } = await activeJobResponse.json();
+
+          if (job_id) {
+              setCurrentJobId(job_id);
+              setIsLoading(true);
+
+              const modelMessageToUpdate = formattedMessages[formattedMessages.length - 1];
+              if (modelMessageToUpdate && modelMessageToUpdate.role === 'model') {
+                  startPolling(job_id, modelMessageToUpdate.id, false);
+              } else {
+                  setIsLoading(false);
+              }
+          } else {
+              setIsLoading(false);
+              setCurrentJobId(null);
+          }
+      } catch (error) {
+          console.error("Failed to select chat:", error);
+          setMessages([{ id: uuidv4(), role: 'error', content: 'Не удалось загрузить этот чат.', displayedContent: 'Не удалось загрузить этот чат.' }]);
+          setIsLoading(false);
+      }
   };
 
   const startNewChat = () => {
@@ -216,112 +296,67 @@ function App() {
   };
 
   const handleSendMessage = async () => {
-    const messageText = userInput.trim();
-    if (!messageText || isLoading) return;
-
-    if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-    }
-
-    setIsLoading(true);
-    setUserInput('');
-
-    const isNewChat = !currentChatId;
-    const conversationId = isNewChat ? uuidv4() : currentChatId!;
-    const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText, displayedContent: messageText };
-
-    if (isNewChat) {
-      const newChatPlaceholder = { id: conversationId, title: messageText.substring(0, 50) || "Новый чат" };
-      setChats(prev => [newChatPlaceholder, ...prev]);
-      setCurrentChatId(conversationId);
-    }
-
-    const modelMessage: Message = { 
-        id: uuidv4(), 
-        role: 'model', 
-        content: '', 
-        displayedContent: '', 
-        thinking_steps: [{ type: 'info', content: 'Задача поставлена в очередь...' }]
-    };
-    
-    setMessages(prev => isNewChat ? [userMessage, modelMessage] : [...prev, userMessage, modelMessage]);
-
-    try {
-        const createJobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message: messageText,
-                conversation_id: conversationId,
-                file_id: activeFileId,
-                use_agent_mode: isAgentMode,
-            }),
-        });
-        setActiveFileId(null);
-
-        if (!createJobResponse.ok) {
-            const errorData = await createJobResponse.text();
-            throw new Error(`Failed to create job: ${errorData}`);
-        }
-
-        const { job_id } = await createJobResponse.json();
-        setCurrentJobId(job_id);
-
-        pollIntervalRef.current = setInterval(async () => {
-            try {
-                const statusResponse = await fetch(`${API_BASE_URL}/v1/jobs/${job_id}/status`);
-                if (!statusResponse.ok) {
-                    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-                    setCurrentJobId(null);
-                    throw new Error(`Polling failed with status: ${statusResponse.status}`);
-                }
-
-                const jobStatus = await statusResponse.json();
-
-                setMessages(currentMessages => currentMessages.map(msg => {
-                    if (msg.id === modelMessage.id) {
-                        const updatedMsg = { ...msg, thinking_steps: jobStatus.thoughts };
-                        if (jobStatus.status === 'complete' && msg.content !== jobStatus.final_answer) {
-                            updatedMsg.content = jobStatus.final_answer || '';
-                        }
-                        return updatedMsg;
-                    }
-                    return msg;
-                }));
-
-                if (jobStatus.status === 'complete' || jobStatus.status === 'failed') {
-                    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-                    setIsLoading(false);
-                    setCurrentJobId(null);
-
-                    if (jobStatus.status === 'failed') {
-                        setMessages(currentMessages => currentMessages.map(msg => 
-                            msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Обработка задачи завершилась с ошибкой.', displayedContent: 'Обработка задачи завершилась с ошибкой.' } : msg
-                        ));
-                    }
-                    if (isNewChat) {
-                        await loadChats();
-                    }
-                }
-            } catch (error) {
-                console.error('Polling error:', error);
-                if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-                setIsLoading(false);
-                setCurrentJobId(null);
-                setMessages(currentMessages => currentMessages.map(msg => 
-                    msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Ошибка при получении статуса задачи.', displayedContent: 'Ошибка при получении статуса задачи.' } : msg
-                ));
-            }
-        }, 2000);
-
-    } catch (error) {
-        console.error('Job creation error:', error);
-        setIsLoading(false);
-        setCurrentJobId(null);
-        setMessages(currentMessages => currentMessages.map(msg => 
-            msg.id === modelMessage.id ? { ...msg, role: 'error', content: 'Не удалось создать задачу для обработки.', displayedContent: 'Не удалось создать задачу для обработки.' } : msg
-        ));
-    }
+      const messageText = userInput.trim();
+      if (!messageText || isLoading) return;
+  
+      if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+      }
+  
+      setIsLoading(true);
+      setUserInput('');
+  
+      const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText, displayedContent: messageText };
+      const modelMessage: Message = {
+          id: uuidv4(), role: 'model', content: '', displayedContent: '',
+          thinking_steps: [{ type: 'info', content: 'Задача поставлена в очередь...' }]
+      };
+      setMessages(prev => [...prev, userMessage, modelMessage]);
+  
+      let conversationId = currentChatId;
+      const isNewChat = !conversationId;
+  
+      try {
+          if (isNewChat) {
+              const chatResponse = await fetch(`${API_BASE_URL}/v1/chats`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ initial_message: messageText }),
+              });
+              if (!chatResponse.ok) throw new Error('Failed to create a new chat.');
+              
+              const newChatInfo: Chat = await chatResponse.json();
+              setChats(prev => [newChatInfo, ...prev]);
+              setCurrentChatId(newChatInfo.id);
+              conversationId = newChatInfo.id;
+          }
+  
+          if (!conversationId) throw new Error("Missing conversation ID to create a job.");
+  
+          const jobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  message: messageText, conversation_id: conversationId,
+                  file_id: activeFileId, use_agent_mode: isAgentMode,
+              }),
+          });
+          setActiveFileId(null);
+          if (!jobResponse.ok) throw new Error(`Failed to create job: ${await jobResponse.text()}`);
+  
+          const { job_id } = await jobResponse.json();
+          setCurrentJobId(job_id);
+          startPolling(job_id, modelMessage.id, isNewChat);
+  
+      } catch (error) {
+          console.error('Error during message sending process:', error);
+          setIsLoading(false);
+          setMessages(prev => prev.map(msg =>
+              msg.id === modelMessage.id
+                  ? { ...msg, role: 'error', content: (error as Error).message, displayedContent: (error as Error).message }
+                  : msg
+          ));
+      }
   };
 
   const handleCancelJob = async () => {
@@ -453,7 +488,6 @@ function App() {
             </div>
             <div className="input-area-wrapper">
               <div className="input-area">
-                  {/* --- TOP ROW: TEXTAREA AND SEND BUTTON --- */}
                   <div className="input-top-row">
                       <textarea
                         ref={userInputRef}
@@ -464,12 +498,16 @@ function App() {
                         onChange={(e) => setUserInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}}
                       />
-                      <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === '' || isLoading}>
-                        {isLoading ? <ClipLoader color="#ffffff" size={20} /> : <FaPaperPlane />}
-                      </button>
+                      {isLoading ? (
+                          <button className="cancel-btn" onClick={handleCancelJob} title="Отменить">
+                              <FaTimes />
+                          </button>
+                      ) : (
+                          <button className="send-btn" onClick={handleSendMessage} disabled={userInput.trim() === ''}>
+                              <FaPaperPlane />
+                          </button>
+                      )}
                   </div>
-
-                  {/* --- BOTTOM TOOLBAR: AGENT MODE BUTTON --- */}
                   <div className="input-bottom-toolbar">
                       <button
                           className={`mode-toggle-btn ${isAgentMode ? 'active' : ''}`}
