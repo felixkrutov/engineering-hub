@@ -211,52 +211,73 @@ function App() {
   };
 
   const selectChat = async (chatId: string) => {
-      if (isLoading && currentJobId) return;
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    if (isLoading && chatId === currentChatId) return;
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
-      setCurrentChatId(chatId);
-      setMessages([]);
-      setIsLoading(true);
+    setIsLoading(true);
+    setCurrentChatId(chatId);
+    setMessages([]); // Clear previous messages
 
-      try {
-          const historyResponse = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
-          if (!historyResponse.ok) throw new Error("Chat history not found");
+    try {
+        // Step 1: Fetch static history
+        const historyRes = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
+        if (!historyRes.ok) throw new Error(`Failed to fetch chat history: ${historyRes.statusText}`);
+        
+        const historyData = await historyRes.json();
+        const historyMessages: Message[] = historyData.map((m: any) => ({
+            id: uuidv4(),
+            role: m.role,
+            content: m.content || '',
+            displayedContent: m.content || '',
+            thinking_steps: m.thinking_steps || []
+        }));
+        
+        // Step 2: Check for an active job
+        const activeJobRes = await fetch(`${API_BASE_URL}/v1/chats/${chatId}/active_job`);
+        if (!activeJobRes.ok) throw new Error(`Failed to check for active job: ${activeJobRes.statusText}`);
 
-          const rawMessages: any[] = await historyResponse.json();
-          const formattedMessages: Message[] = rawMessages.map(m => ({
-              id: m.id || uuidv4(), role: m.role, content: m.content || '',
-              displayedContent: m.content || '', thinking_steps: m.thinking_steps || []
-          }));
-          setMessages(formattedMessages);
+        const { job_id } = await activeJobRes.json();
 
-          const activeJobResponse = await fetch(`${API_BASE_URL}/v1/chats/${chatId}/active_job`);
-          if (!activeJobResponse.ok) {
-              console.warn(`Could not check for active job on chat ${chatId}`);
-              setIsLoading(false);
-              return;
-          }
-          const { job_id } = await activeJobResponse.json();
+        if (job_id) {
+            // Step 3: Job is active! Fetch its LATEST state from Redis
+            const jobStatusRes = await fetch(`${API_BASE_URL}/v1/jobs/${job_id}/status`);
+            if (!jobStatusRes.ok) throw new Error(`Failed to get job status for ${job_id}: ${jobStatusRes.statusText}`);
 
-          if (job_id) {
-              setCurrentJobId(job_id);
-              setIsLoading(true);
+            const jobStatus = await jobStatusRes.json();
+            
+            // Construct the "in-progress" message
+            const modelMessage: Message = {
+                id: uuidv4(), role: 'model', content: '', displayedContent: '',
+                thinking_steps: jobStatus.thoughts,
+            };
 
-              const modelMessageToUpdate = formattedMessages[formattedMessages.length - 1];
-              if (modelMessageToUpdate && modelMessageToUpdate.role === 'model') {
-                  startPolling(job_id, modelMessageToUpdate.id, false);
-              } else {
-                  setIsLoading(false);
-              }
-          } else {
-              setIsLoading(false);
-              setCurrentJobId(null);
-          }
-      } catch (error) {
-          console.error("Failed to select chat:", error);
-          setMessages([{ id: uuidv4(), role: 'error', content: 'Не удалось загрузить этот чат.', displayedContent: 'Не удалось загрузить этот чат.' }]);
-          setIsLoading(false);
-      }
+            // Combine history with the LIVE in-progress message
+            setMessages([...historyMessages, modelMessage]);
+            setCurrentJobId(job_id);
+
+            // If the job isn't finished, start polling
+            if (jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && jobStatus.status !== 'cancelled') {
+                startPolling(job_id, modelMessage.id, false);
+            } else {
+                // Job is finished, just display the final state
+                setMessages(currentMsgs => currentMsgs.map(msg => 
+                    msg.id === modelMessage.id ? { ...msg, content: jobStatus.final_answer, displayedContent: jobStatus.final_answer } : msg
+                ));
+                setIsLoading(false);
+            }
+        } else {
+            // No active job, just show static history
+            setMessages(historyMessages);
+            setIsLoading(false);
+            setCurrentJobId(null);
+        }
+    } catch (error) {
+        console.error("Failed to select chat:", error);
+        setMessages([{ id: uuidv4(), role: 'error', content: 'Не удалось загрузить этот чат.', displayedContent: 'Не удалось загрузить этот чат.' }]);
+        setIsLoading(false);
+    }
   };
+
 
   const startNewChat = () => {
     setCurrentChatId(null);
@@ -311,8 +332,19 @@ function App() {
           id: uuidv4(), role: 'model', content: '', displayedContent: '',
           thinking_steps: [{ type: 'info', content: 'Задача поставлена в очередь...' }]
       };
-      setMessages(prev => [...prev, userMessage, modelMessage]);
-  
+      // For existing chats, we don't add the user message immediately, 
+      // as the backend saves it and it will be fetched on next selection.
+      // We only add it visually for a seamless new chat experience.
+      if (!currentChatId) {
+        setMessages(prev => [...prev, userMessage]);
+      } else {
+        // In an existing chat, the history is already there. Add the new user message.
+        // The backend will persist it. The model message will show progress.
+         setMessages(prev => [...prev, userMessage]);
+      }
+      // Add placeholder for model response immediately
+      setMessages(prev => [...prev, modelMessage]);
+
       let conversationId = currentChatId;
       const isNewChat = !conversationId;
   
