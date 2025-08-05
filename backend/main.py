@@ -211,7 +211,7 @@ class ChatRequest(BaseModel):
     message: str
     conversation_id: str
     file_id: Optional[str] = None
-    use_agent_mode: bool = False # <-- ADD THIS LINE
+    use_agent_mode: bool = False
 
 class CreateChatRequest(BaseModel):
     title: str
@@ -306,28 +306,44 @@ async def create_new_chat(request: CreateChatRequest):
     conversation_id = str(uuid.uuid4())
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     title_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.title.txt")
-
     try:
         os.makedirs(HISTORY_DIR, exist_ok=True)
-        # Create an empty history file to "reserve" the chat's existence
-        with open(history_file_path, 'w', encoding='utf-8') as f:
-            json.dump([], f)
-        # Create the title file using the provided title
-        with open(title_file_path, 'w', encoding='utf-8') as f:
-            f.write(request.title)
-        
-        logger.info(f"Successfully created and registered new chat with ID: {conversation_id}")
+        with open(history_file_path, 'w', encoding='utf-8') as f: json.dump([], f)
+        with open(title_file_path, 'w', encoding='utf-8') as f: f.write(request.title)
         return ChatInfo(id=conversation_id, title=request.title)
     except OSError as e:
-        logger.error(f"Failed to create chat files for {conversation_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to create chat files.")
 
 @app.post("/api/v1/jobs", response_model=JobCreationResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_chat_job(request: ChatRequest):
     job_id = f"job:{uuid.uuid4()}"
-    
-    # Create the job payload for the worker
     job_data = request.model_dump_json()
+
+    # --- SAVE USER MESSAGE ---
+    try:
+        history_file_path = os.path.join(HISTORY_DIR, f"{request.conversation_id}.json")
+        if not os.path.exists(history_file_path):
+            raise HTTPException(status_code=404, detail=f"Conversation file for ID {request.conversation_id} not found.")
+
+        with open(history_file_path, 'r+', encoding='utf-8') as f:
+            try:
+                history = json.load(f)
+                if not isinstance(history, list): history = []
+            except json.JSONDecodeError:
+                history = [] # Overwrite if file is not valid JSON
+            
+            history.append({"role": "user", "parts": [request.message]})
+            
+            f.seek(0)
+            json.dump(history, f, indent=2, ensure_ascii=False)
+            f.truncate()
+    except Exception as e:
+        logger.error(f"Failed to write to history file {history_file_path}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save user message: {e}")
+
+    # --- LINK CONVERSATION TO JOB ---
+    redis_client.set(f"active_job_for_convo:{request.conversation_id}", job_id, ex=3600) # ex=3600 sets expiry to 1 hour
+    logger.info(f"Linked conversation {request.conversation_id} to active job {job_id}")
 
     # Create initial status in a Redis Hash
     initial_status = {
@@ -363,6 +379,22 @@ async def cancel_job(job_id: str):
     
     logger.info(f"Job {job_id} cancellation request received and status set to 'cancelled'.")
     return JSONResponse(content={"status": "cancellation_requested", "job_id": job_id})
+
+@app.get("/api/v1/chats/{conversation_id}/active_job", status_code=200)
+async def get_active_job_for_convo(conversation_id: str):
+    job_id_key = f"active_job_for_convo:{conversation_id}"
+    job_id = redis_client.get(job_id_key)
+    
+    if not job_id:
+        return {"job_id": None}
+
+    # Also check if the job itself still exists in Redis
+    if not redis_client.exists(job_id):
+         # The link is stale, clean it up
+         redis_client.delete(job_id_key)
+         return {"job_id": None}
+         
+    return {"job_id": job_id}
 
 @app.get("/api/v1/chats/{conversation_id}")
 async def get_chat_history(conversation_id: str):
