@@ -14,6 +14,7 @@ interface Chat {
 
 interface Message {
   id: string;
+  jobId?: string; // Unique ID for the currently running job
   role: 'user' | 'model' | 'error';
   content: string;
   displayedContent: string;
@@ -172,10 +173,20 @@ function App() {
               const jobStatus = await statusResponse.json();
 
               setMessages(currentMessages => currentMessages.map(msg => {
-                  if (msg.id === modelMessageId) {
-                      const updatedMsg = { ...msg, thinking_steps: jobStatus.thoughts };
-                      if (jobStatus.status === 'complete' && msg.content !== jobStatus.final_answer) {
-                          updatedMsg.content = jobStatus.final_answer || '';
+                  if (msg.jobId === jobId) { // KEY CHANGE: Find by job_id
+                      const updatedMsg: Message = { 
+                          ...msg, 
+                          thinking_steps: jobStatus.thoughts,
+                          content: (jobStatus.status === 'complete') ? (jobStatus.final_answer || '') : msg.content,
+                          role: (jobStatus.status === 'failed') ? 'error' : msg.role,
+                          jobId: msg.jobId // Keep jobId by default
+                      };
+                      // If the job is done, remove the jobId to make it a static message
+                      if (['complete', 'failed', 'cancelled'].includes(jobStatus.status)) {
+                          delete updatedMsg.jobId; 
+                          if (jobStatus.status === 'failed') {
+                              updatedMsg.content = 'Обработка задачи завершилась с ошибкой.';
+                          }
                       }
                       return updatedMsg;
                   }
@@ -186,12 +197,6 @@ function App() {
                   if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                   setIsLoading(false);
                   setCurrentJobId(null);
-
-                  if (jobStatus.status === 'failed') {
-                      setMessages(currentMessages => currentMessages.map(msg =>
-                          msg.id === modelMessageId ? { ...msg, role: 'error', content: 'Обработка задачи завершилась с ошибкой.', displayedContent: 'Обработка задачи завершилась с ошибкой.' } : msg
-                      ));
-                  }
                   if (isNewChat && jobStatus.status === 'complete') {
                       await loadChats();
                   }
@@ -202,7 +207,7 @@ function App() {
               setIsLoading(false);
               setCurrentJobId(null);
               setMessages(currentMessages => currentMessages.map(msg =>
-                  msg.id === modelMessageId ? { ...msg, role: 'error', content: 'Ошибка при получении статуса задачи.', displayedContent: 'Ошибка при получении статуса задачи.' } : msg
+                  msg.jobId === jobId ? { ...msg, role: 'error', content: 'Ошибка при получении статуса задачи.', displayedContent: 'Ошибка при получении статуса задачи.' } : msg
               ));
           }
       };
@@ -249,6 +254,7 @@ function App() {
             const modelMessage: Message = {
                 id: uuidv4(), role: 'model', content: '', displayedContent: '',
                 thinking_steps: jobStatus.thoughts,
+                jobId: job_id
             };
 
             // Combine history with the LIVE in-progress message
@@ -332,18 +338,8 @@ function App() {
           id: uuidv4(), role: 'model', content: '', displayedContent: '',
           thinking_steps: [{ type: 'info', content: 'Задача поставлена в очередь...' }]
       };
-      // For existing chats, we don't add the user message immediately, 
-      // as the backend saves it and it will be fetched on next selection.
-      // We only add it visually for a seamless new chat experience.
-      if (!currentChatId) {
-        setMessages(prev => [...prev, userMessage]);
-      } else {
-        // In an existing chat, the history is already there. Add the new user message.
-        // The backend will persist it. The model message will show progress.
-         setMessages(prev => [...prev, userMessage]);
-      }
-      // Add placeholder for model response immediately
-      setMessages(prev => [...prev, modelMessage]);
+      
+      setMessages(prev => [...prev, userMessage, modelMessage]);
 
       let conversationId = currentChatId;
       const isNewChat = !conversationId;
@@ -378,6 +374,12 @@ function App() {
   
           const { job_id } = await jobResponse.json();
           setCurrentJobId(job_id);
+
+          // Find the placeholder and assign the job_id to it
+          setMessages(prev => prev.map(msg => 
+              msg.id === modelMessage.id ? { ...msg, jobId: job_id } : msg
+          ));
+
           startPolling(job_id, modelMessage.id, isNewChat);
   
       } catch (error) {
