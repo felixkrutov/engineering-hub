@@ -324,30 +324,38 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     # FINALIZATION STAGE
     update_job_status(r_client, job_id, final_answer=final_approved_answer, status="complete")
     
-    # --- SAVE CLEAN HISTORY ---
-    history = []
-    if os.path.exists(history_file_path):
-        try:
-            with open(history_file_path, 'r', encoding='utf-8') as f:
+    # --- ATOMIC FINALIZATION AND CLEANUP ---
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    try:
+        with open(history_file_path, 'r+', encoding='utf-8') as f:
+            try:
                 history = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            logger.warning(f"Could not read history file {history_file_path} before writing: {e}. Starting with fresh list.")
-            history = []
-    
-    user_message = Message(role="user", parts=[request_message])
-    
-    final_thoughts_raw = r_client.hget(job_id, "thoughts")
-    final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+                if not isinstance(history, list): history = []
+            except json.JSONDecodeError:
+                history = []
+            
+            # Prepare the model's message with thoughts
+            final_thoughts_raw = r_client.hget(job_id, "thoughts")
+            final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+            model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+            
+            # Append ONLY the model's message
+            history.append(model_message.model_dump(exclude_none=True))
+            
+            f.seek(0)
+            json.dump(history, f, indent=2, ensure_ascii=False)
+            f.truncate()
+            
+            logger.info(f"Task for job {job_id} finished. History saved.")
 
-    model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
-
-    history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
-    
-    os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
-    with open(history_file_path, 'w', encoding='utf-8') as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
-    
-    logger.info(f"Complex task for job {job_id} finished successfully and history saved cleanly.")
+    except Exception as e:
+        logger.error(f"Failed to save model response to history for job {job_id}: {e}", exc_info=True)
+    finally:
+        # CRITICAL: Clean up the active job link to prevent ghost jobs
+        active_job_key = f"active_job_for_convo:{conversation_id}"
+        if r_client.get(active_job_key) == job_id:
+             r_client.delete(active_job_key)
+             logger.info(f"Cleaned up active job key '{active_job_key}' for completed job {job_id}.")
 
 async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis.Redis, config: AppConfig):
     """
@@ -366,27 +374,38 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
 
     update_job_status(r_client, job_id, new_thought="Ответ сгенерирован в простом режиме.", final_answer=final_answer, status="complete")
 
-    # Save chat history
+    # --- ATOMIC FINALIZATION AND CLEANUP ---
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-    history = []
-    if os.path.exists(history_file_path):
-        with open(history_file_path, 'r', encoding='utf-8') as f:
-            history = json.load(f)
-    
-    user_message = Message(role="user", parts=[request_message])
-    
-    final_thoughts_raw = r_client.hget(job_id, "thoughts")
-    final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+    try:
+        with open(history_file_path, 'r+', encoding='utf-8') as f:
+            try:
+                history = json.load(f)
+                if not isinstance(history, list): history = []
+            except json.JSONDecodeError:
+                history = []
+            
+            # Prepare the model's message with thoughts
+            final_thoughts_raw = r_client.hget(job_id, "thoughts")
+            final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+            model_message = Message(role="model", parts=[final_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+            
+            # Append ONLY the model's message
+            history.append(model_message.model_dump(exclude_none=True))
+            
+            f.seek(0)
+            json.dump(history, f, indent=2, ensure_ascii=False)
+            f.truncate()
+            
+            logger.info(f"Task for job {job_id} finished. History saved.")
 
-    model_message = Message(role="model", parts=[final_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
-
-    history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
-    
-    os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
-    with open(history_file_path, 'w', encoding='utf-8') as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
-    
-    logger.info(f"Simple chat for job {job_id} finished successfully and history saved.")
+    except Exception as e:
+        logger.error(f"Failed to save model response to history for job {job_id}: {e}", exc_info=True)
+    finally:
+        # CRITICAL: Clean up the active job link to prevent ghost jobs
+        active_job_key = f"active_job_for_convo:{conversation_id}"
+        if r_client.get(active_job_key) == job_id:
+             r_client.delete(active_job_key)
+             logger.info(f"Cleaned up active job key '{active_job_key}' for completed job {job_id}.")
 
 
 async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Redis):
