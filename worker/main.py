@@ -260,8 +260,21 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
             if r_client.hget(job_id, "status") == "cancelled":
                 logger.info(f"Job {job_id} was cancelled during tool use. Aborting.")
                 return
-            if not response.candidates: break
+            
+            # --- Start of new robust block ---
+            if not response.candidates or not response.candidates[0].content.parts:
+                logger.error(f"Gemini returned an empty or malformed response for job {job_id}. This might be due to safety filters. Response: {response}")
+                # If this is the first attempt, the whole answer fails. Otherwise, we can try to use the previous answer.
+                if iteration > 0:
+                    logger.warning(f"Falling back to the last valid answer for job {job_id}.")
+                    # The 'final_approved_answer' variable already holds the answer from the previous iteration. We just break the loop.
+                else:
+                    final_approved_answer = "Ошибка: Модель не смогла сгенерировать ответ. Это могло произойти из-за внутренних фильтров безопасности или временной ошибки API."
+                break # Exit the `while True` loop for tool use.
+
             part = response.candidates[0].content.parts[0]
+            # --- End of new robust block ---
+
             if hasattr(part, 'function_call') and part.function_call.name:
                 fc = part.function_call
                 tool_map = {"analyze_document": analyze_document, "search_knowledge_base": search_knowledge_base, "list_all_files_summary": list_all_files_summary}
