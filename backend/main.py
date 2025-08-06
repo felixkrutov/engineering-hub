@@ -319,9 +319,32 @@ async def create_chat_job(request: ChatRequest):
     job_id = f"job:{uuid.uuid4()}"
     job_data = request.model_dump_json()
 
-    # --- SAVE USER MESSAGE ---
-    # THIS BLOCK IS DELETED TO PREVENT MESSAGE DUPLICATION.
-    # The worker is now solely responsible for writing to the history file upon job completion.
+    # --- SAVE USER MESSAGE IMMEDIATELY ---
+    try:
+        history_file_path = os.path.join(HISTORY_DIR, f"{request.conversation_id}.json")
+        if not os.path.exists(history_file_path):
+            # This should not happen if the chat was created correctly, but as a safeguard:
+            with open(history_file_path, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+
+        with open(history_file_path, 'r+', encoding='utf-8') as f:
+            try:
+                # Read existing history
+                history = json.load(f)
+                if not isinstance(history, list): history = []
+            except json.JSONDecodeError:
+                history = [] # Overwrite if file is corrupt
+            
+            # Append ONLY the new user message
+            history.append({"role": "user", "parts": [request.message]})
+            
+            # Go back to the beginning of the file to overwrite
+            f.seek(0)
+            json.dump(history, f, indent=2, ensure_ascii=False)
+            f.truncate()
+    except Exception as e:
+        logger.error(f"Failed to write user message to history file {history_file_path}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save user message.")
 
     # --- LINK CONVERSATION TO JOB ---
     redis_client.set(f"active_job_for_convo:{request.conversation_id}", job_id, ex=3600) # ex=3600 sets expiry to 1 hour
