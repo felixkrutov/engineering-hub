@@ -234,18 +234,25 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
             logger.info(f"Job {job_id} was cancelled during iteration {iteration + 1}. Aborting.")
             return
 
-        # STAGE 1: EXECUTOR
-        step_content = "Получены правки от контроля качества. Начинаю доработку..." if iteration > 0 else "Формулирую предварительный ответ..."
-        update_job_status(r_client, job_id, new_thought=step_content)
-
-        if iteration == 0 and not request_file_id:
-            update_job_status(r_client, job_id, new_thought="Анализирую контекст запроса, ищу отсылки к документам...")
-            all_files = kb_indexer.get_all_files()
-            contextual_file_id = await determine_file_context(request_message, all_files)
-            if contextual_file_id:
-                request_file_id = contextual_file_id
-                update_job_status(r_client, job_id, new_thought=f"[Анализ] Контекст определен. Работа с файлом ID: {contextual_file_id}")
-
+        # STAGE 1: EXECUTOR - Planning and Context Analysis
+        if iteration == 0:
+            # Step 1: Announce planning phase
+            update_job_status(r_client, job_id, new_thought="[Анализ] Анализирую запрос и планирую действия...")
+            
+            # Step 2: Perform contextual document search (if no file is specified)
+            if not request_file_id:
+                update_job_status(r_client, job_id, new_thought="[Анализ] Ищу возможные отсылки к документам в базе знаний...")
+                all_files = kb_indexer.get_all_files()
+                contextual_file_id = await determine_file_context(request_message, all_files)
+                if contextual_file_id:
+                    request_file_id = contextual_file_id
+                    file_info = kb_indexer.get_file_by_id(contextual_file_id)
+                    file_name = file_info.get('name', contextual_file_id) if file_info else contextual_file_id
+                    update_job_status(r_client, job_id, new_thought=f"[Анализ] Контекст определен. Работаю с файлом: '{file_name}'")
+        else:
+            # This part handles subsequent quality control iterations
+            update_job_status(r_client, job_id, new_thought=f"[Контроль] Получены правки (Итерация {iteration+1}). Начинаю доработку...")
+        
         prompt_for_executor = request_message
         if iteration == 0 and request_file_id:
             prompt_for_executor += f"\n\n[Контекст определен] Работай с файлом ID: {request_file_id}."
@@ -261,19 +268,15 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
                 logger.info(f"Job {job_id} was cancelled during tool use. Aborting.")
                 return
             
-            # --- Start of new robust block ---
             if not response.candidates or not response.candidates[0].content.parts:
                 logger.error(f"Gemini returned an empty or malformed response for job {job_id}. This might be due to safety filters. Response: {response}")
-                # If this is the first attempt, the whole answer fails. Otherwise, we can try to use the previous answer.
                 if iteration > 0:
                     logger.warning(f"Falling back to the last valid answer for job {job_id}.")
-                    # The 'final_approved_answer' variable already holds the answer from the previous iteration. We just break the loop.
                 else:
                     final_approved_answer = "Ошибка: Модель не смогла сгенерировать ответ. Это могло произойти из-за внутренних фильтров безопасности или временной ошибки API."
-                break # Exit the `while True` loop for tool use.
+                break 
 
             part = response.candidates[0].content.parts[0]
-            # --- End of new robust block ---
 
             if hasattr(part, 'function_call') and part.function_call.name:
                 fc = part.function_call
@@ -318,8 +321,6 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     update_job_status(r_client, job_id, final_answer=final_approved_answer, status="complete")
     
     # --- SAVE CLEAN HISTORY ---
-    # Load the history file, append the final clean turn (user message + final model answer), and overwrite.
-    # This ensures that internal agent dialogues are not saved to the user-facing history file.
     history = []
     if os.path.exists(history_file_path):
         try:
