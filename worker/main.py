@@ -206,6 +206,10 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     conversation_id = request_payload['conversation_id']
 
     # --- AGENT LOOP SETUP (MOVED BEFORE THE LOOP) ---
+    
+    # Log the exact system prompt being used for this job for diagnostics.
+    logger.info(f"EXECUTOR PROMPT FOR JOB {job_id}: '{config.executor.system_prompt}'")
+
     # 1. Initialize the model once.
     model = genai.GenerativeModel(
         model_name=config.executor.model_name,
