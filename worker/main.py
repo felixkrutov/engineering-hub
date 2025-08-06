@@ -205,6 +205,30 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     request_file_id = request_payload.get('file_id')
     conversation_id = request_payload['conversation_id']
 
+    # --- AGENT LOOP SETUP (MOVED BEFORE THE LOOP) ---
+    # 1. Initialize the model once.
+    model = genai.GenerativeModel(
+        model_name=config.executor.model_name,
+        tools=[analyze_document, search_knowledge_base, list_all_files_summary],
+        system_instruction=config.executor.system_prompt
+    )
+    
+    # 2. Load the existing chat history from file.
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    loaded_history = []
+    if os.path.exists(history_file_path):
+        try:
+            with open(history_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if content:
+                    loaded_history = json.loads(content)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load/parse history for {conversation_id}: {e}. Starting fresh.")
+            loaded_history = []
+    
+    # 3. Start a single, continuous chat session with the loaded history.
+    chat_session = model.start_chat(history=loaded_history)
+    
     for iteration in range(MAX_ITERATIONS):
         if r_client.hget(job_id, "status") == "cancelled":
             logger.info(f"Job {job_id} was cancelled during iteration {iteration + 1}. Aborting.")
@@ -226,17 +250,12 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
         if iteration == 0 and request_file_id:
             prompt_for_executor += f"\n\n[Контекст определен] Работай с файлом ID: {request_file_id}."
         elif iteration > 0:
-            prompt_for_executor = f"Your previous answer requires changes. Feedback: {feedback_from_controller}. Original query: {request_message}"
+            prompt_for_executor = f"IMPORTANT: An internal quality review has provided feedback on your last response. You MUST refine your answer for the end-user based on this feedback. Do not address the feedback directly. Instead, provide a new, improved final answer to the user's original query.\n\n[Original User Query]: {request_message}\n\n[Internal Feedback]: {feedback_from_controller}\n\nRefine your previous answer now."
         
-        model = genai.GenerativeModel(
-            model_name=config.executor.model_name,
-            tools=[analyze_document, search_knowledge_base, list_all_files_summary],
-            system_instruction=config.executor.system_prompt
-        )
-        chat_session = model.start_chat(history=[])
+        # The chat session is NOT re-initialized here anymore. We use the existing one.
         response = await run_with_retry(chat_session.send_message_async, prompt_for_executor)
         executor_answer = "Исполнитель не смог сформировать ответ."
-        tool_context = ""
+        tool_context = "" # Reset tool context for each iteration's controller review
 
         while True:
             if r_client.hget(job_id, "status") == "cancelled":
@@ -251,6 +270,7 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
                 tool_result = tool_func(**fc.args) if tool_func else f"Ошибка: Неизвестный инструмент '{fc.name}'."
                 tool_context += f"Вызов {fc.name} с {fc.args} дал результат:\n{tool_result}\n\n"
                 update_job_status(r_client, job_id, new_thought=f"Обращаюсь к базе знаний с запросом: {fc.args.get('query', '...')}")
+                # The send_message_async call now correctly builds upon the existing session history
                 response = await run_with_retry(chat_session.send_message_async, gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result})))
             elif hasattr(part, 'text') and part.text:
                 executor_answer = part.text
@@ -286,24 +306,19 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     # FINALIZATION STAGE
     update_job_status(r_client, job_id, final_answer=final_approved_answer, status="complete")
     
-    # Save chat history
-    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-    history = []
-    if os.path.exists(history_file_path):
-        with open(history_file_path, 'r', encoding='utf-8') as f:
-            history = json.load(f)
-    user_message = Message(role="user", parts=[request_message])
+    # --- SAVE HISTORY (REWRITTEN) ---
+    # Overwrite the history file with the complete, final session history.
     
-    final_thoughts_raw = r_client.hget(job_id, "thoughts")
-    final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
-
-    model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
-
-    history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
+    # Convert the session history to a JSON-serializable format, saving only text parts.
+    # This prevents errors from non-serializable objects like function calls.
+    history_to_save = [
+        {"role": msg.role, "parts": [part.text for part in msg.parts if hasattr(part, 'text')]}
+        for msg in chat_session.history
+    ]
     
     os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
     with open(history_file_path, 'w', encoding='utf-8') as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
+        json.dump(history_to_save, f, indent=2, ensure_ascii=False)
     
     logger.info(f"Complex task for job {job_id} finished successfully and history saved.")
 
