@@ -159,7 +159,7 @@ function App() {
     }
   };
 
-  const startPolling = (jobId: string, modelMessageId: string, isNewChat: boolean) => {
+  const startPolling = (jobId: string, isNewChat: boolean) => {
       if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
       }
@@ -197,8 +197,9 @@ function App() {
                   if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                   setIsLoading(false);
                   setCurrentJobId(null);
-                  if (isNewChat && jobStatus.status === 'complete') {
-                      await loadChats();
+                  // On completion, reload the chat to get the final persisted state
+                  if (currentChatId) {
+                    await selectChat(currentChatId);
                   }
               }
           } catch (error) {
@@ -216,7 +217,7 @@ function App() {
   };
 
   const selectChat = async (chatId: string) => {
-    if (isLoading && chatId === currentChatId) return;
+    if (isLoading && chatId !== currentChatId) return;
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
     setIsLoading(true);
@@ -224,7 +225,6 @@ function App() {
     setMessages([]); // Clear previous messages
 
     try {
-        // Step 1: Fetch static history
         const historyRes = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
         if (!historyRes.ok) throw new Error(`Failed to fetch chat history: ${historyRes.statusText}`);
         
@@ -237,42 +237,33 @@ function App() {
             thinking_steps: m.thinking_steps || []
         }));
         
-        // Step 2: Check for an active job
         const activeJobRes = await fetch(`${API_BASE_URL}/v1/chats/${chatId}/active_job`);
         if (!activeJobRes.ok) throw new Error(`Failed to check for active job: ${activeJobRes.statusText}`);
 
         const { job_id } = await activeJobRes.json();
 
         if (job_id) {
-            // Step 3: Job is active! Fetch its LATEST state from Redis
             const jobStatusRes = await fetch(`${API_BASE_URL}/v1/jobs/${job_id}/status`);
             if (!jobStatusRes.ok) throw new Error(`Failed to get job status for ${job_id}: ${jobStatusRes.statusText}`);
 
             const jobStatus = await jobStatusRes.json();
             
-            // Construct the "in-progress" message
             const modelMessage: Message = {
                 id: uuidv4(), role: 'model', content: '', displayedContent: '',
                 thinking_steps: jobStatus.thoughts,
                 jobId: job_id
             };
 
-            // Combine history with the LIVE in-progress message
             setMessages([...historyMessages, modelMessage]);
             setCurrentJobId(job_id);
 
-            // If the job isn't finished, start polling
-            if (jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && jobStatus.status !== 'cancelled') {
-                startPolling(job_id, modelMessage.id, false);
+            if (!['complete', 'failed', 'cancelled'].includes(jobStatus.status)) {
+                setIsLoading(true);
+                startPolling(job_id, false);
             } else {
-                // Job is finished, just display the final state
-                setMessages(currentMsgs => currentMsgs.map(msg => 
-                    msg.id === modelMessage.id ? { ...msg, content: jobStatus.final_answer, displayedContent: jobStatus.final_answer } : msg
-                ));
                 setIsLoading(false);
             }
         } else {
-            // No active job, just show static history
             setMessages(historyMessages);
             setIsLoading(false);
             setCurrentJobId(null);
@@ -332,14 +323,6 @@ function App() {
   
       setIsLoading(true);
       setUserInput('');
-  
-      const userMessage: Message = { id: uuidv4(), role: 'user', content: messageText, displayedContent: messageText };
-      const modelMessage: Message = {
-          id: uuidv4(), role: 'model', content: '', displayedContent: '',
-          thinking_steps: [{ type: 'info', content: 'Задача поставлена в очередь...' }]
-      };
-      
-      setMessages(prev => [...prev, userMessage, modelMessage]);
 
       let conversationId = currentChatId;
       const isNewChat = !conversationId;
@@ -354,13 +337,12 @@ function App() {
               if (!chatResponse.ok) throw new Error('Failed to create a new chat.');
               
               const newChatInfo: Chat = await chatResponse.json();
-              setChats(prev => [newChatInfo, ...prev]);
-              setCurrentChatId(newChatInfo.id);
               conversationId = newChatInfo.id;
           }
   
           if (!conversationId) throw new Error("Missing conversation ID to create a job.");
   
+          // The user message is now added to history on the backend immediately
           const jobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -372,24 +354,17 @@ function App() {
           setActiveFileId(null);
           if (!jobResponse.ok) throw new Error(`Failed to create job: ${await jobResponse.text()}`);
   
-          const { job_id } = await jobResponse.json();
-          setCurrentJobId(job_id);
-
-          // Find the placeholder and assign the job_id to it
-          setMessages(prev => prev.map(msg => 
-              msg.id === modelMessage.id ? { ...msg, jobId: job_id } : msg
-          ));
-
-          startPolling(job_id, modelMessage.id, isNewChat);
+          // SUCCESS: Now, reload the chat from the single source of truth
+          if (isNewChat) {
+              await loadChats(); // Load new chat list
+          }
+          await selectChat(conversationId);
   
       } catch (error) {
           console.error('Error during message sending process:', error);
-          setIsLoading(false);
-          setMessages(prev => prev.map(msg =>
-              msg.id === modelMessage.id
-                  ? { ...msg, role: 'error', content: (error as Error).message, displayedContent: (error as Error).message }
-                  : msg
-          ));
+          // You might want to add a temporary error message to the UI here
+      } finally {
+          // selectChat will handle the final loading state
       }
   };
 
@@ -407,19 +382,11 @@ function App() {
       setIsLoading(false);
       setCurrentJobId(null);
 
-      setMessages(prev => {
-        const lastMessage = prev[prev.length - 1];
-        if (lastMessage && lastMessage.role === 'model') {
-          const updatedLastMessage = { 
-            ...lastMessage, 
-            content: 'Запрос отменен пользователем.',
-            displayedContent: 'Запрос отменен пользователем.',
-            thinking_steps: [...(lastMessage.thinking_steps || []), { type: 'error', content: 'Запрос отменен пользователем.' }]
-          };
-          return [...prev.slice(0, -1), updatedLastMessage];
-        }
-        return prev;
-      });
+      // Reload the chat to reflect the cancelled state from history
+      if (currentChatId) {
+        selectChat(currentChatId);
+      }
+
     } catch (error) {
       console.error("Failed to cancel job:", error);
     }
@@ -502,7 +469,7 @@ function App() {
         <main className="main-content">
           <div className="chat-area">
             <div className="chat-container" ref={chatContainerRef}>
-              {messages.length === 0 ? (
+              {messages.length === 0 && !isLoading ? (
                   <div className="welcome-screen"><h1>Mossa AI</h1><p>Начните новый диалог или выберите существующий</p></div>
               ) : (
                   messages.map((msg, index) => (
@@ -511,7 +478,7 @@ function App() {
                               {msg.role === 'model' && msg.thinking_steps && msg.thinking_steps.length > 0 && (
                                 <AgentThoughts
                                   steps={msg.thinking_steps}
-                                  defaultCollapsed={!(index === messages.length - 1 && isLoading)}
+                                  defaultCollapsed={!!msg.jobId}
                                 />
                               )}
                               <p className="content">{msg.displayedContent}</p>
@@ -519,6 +486,7 @@ function App() {
                       </div>
                   ))
               )}
+               {isLoading && messages.length > 0 && messages[messages.length-1].role !== 'model' && <div className="spinner-container"><ClipLoader color="#888" size={30} /></div>}
             </div>
             <div className="input-area-wrapper">
               <div className="input-area">
@@ -531,6 +499,7 @@ function App() {
                         value={userInput}
                         onChange={(e) => setUserInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }}}
+                        disabled={isLoading}
                       />
                       {isLoading ? (
                           <button className="cancel-btn" onClick={handleCancelJob} title="Отменить">
