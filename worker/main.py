@@ -213,7 +213,7 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
         system_instruction=config.executor.system_prompt
     )
     
-    # 2. Load the existing chat history from file.
+    # 2. Load the existing chat history from file to provide context to the agent.
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     loaded_history = []
     if os.path.exists(history_file_path):
@@ -252,7 +252,6 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
         elif iteration > 0:
             prompt_for_executor = f"IMPORTANT: An internal quality review has provided feedback on your last response. You MUST refine your answer for the end-user based on this feedback. Do not address the feedback directly. Instead, provide a new, improved final answer to the user's original query.\n\n[Original User Query]: {request_message}\n\n[Internal Feedback]: {feedback_from_controller}\n\nRefine your previous answer now."
         
-        # The chat session is NOT re-initialized here anymore. We use the existing one.
         response = await run_with_retry(chat_session.send_message_async, prompt_for_executor)
         executor_answer = "Исполнитель не смог сформировать ответ."
         tool_context = "" # Reset tool context for each iteration's controller review
@@ -270,7 +269,6 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
                 tool_result = tool_func(**fc.args) if tool_func else f"Ошибка: Неизвестный инструмент '{fc.name}'."
                 tool_context += f"Вызов {fc.name} с {fc.args} дал результат:\n{tool_result}\n\n"
                 update_job_status(r_client, job_id, new_thought=f"Обращаюсь к базе знаний с запросом: {fc.args.get('query', '...')}")
-                # The send_message_async call now correctly builds upon the existing session history
                 response = await run_with_retry(chat_session.send_message_async, gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result})))
             elif hasattr(part, 'text') and part.text:
                 executor_answer = part.text
@@ -306,21 +304,32 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     # FINALIZATION STAGE
     update_job_status(r_client, job_id, final_answer=final_approved_answer, status="complete")
     
-    # --- SAVE HISTORY (REWRITTEN) ---
-    # Overwrite the history file with the complete, final session history.
+    # --- SAVE CLEAN HISTORY ---
+    # Load the history file, append the final clean turn (user message + final model answer), and overwrite.
+    # This ensures that internal agent dialogues are not saved to the user-facing history file.
+    history = []
+    if os.path.exists(history_file_path):
+        try:
+            with open(history_file_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            logger.warning(f"Could not read history file {history_file_path} before writing: {e}. Starting with fresh list.")
+            history = []
     
-    # Convert the session history to a JSON-serializable format, saving only text parts.
-    # This prevents errors from non-serializable objects like function calls.
-    history_to_save = [
-        {"role": msg.role, "parts": [part.text for part in msg.parts if hasattr(part, 'text')]}
-        for msg in chat_session.history
-    ]
+    user_message = Message(role="user", parts=[request_message])
+    
+    final_thoughts_raw = r_client.hget(job_id, "thoughts")
+    final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+
+    model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+
+    history.extend([user_message.model_dump(exclude_none=True), model_message.model_dump(exclude_none=True)])
     
     os.makedirs(os.path.dirname(history_file_path), exist_ok=True)
     with open(history_file_path, 'w', encoding='utf-8') as f:
-        json.dump(history_to_save, f, indent=2, ensure_ascii=False)
+        json.dump(history, f, indent=2, ensure_ascii=False)
     
-    logger.info(f"Complex task for job {job_id} finished successfully and history saved.")
+    logger.info(f"Complex task for job {job_id} finished successfully and history saved cleanly.")
 
 async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis.Redis, config: AppConfig):
     """
