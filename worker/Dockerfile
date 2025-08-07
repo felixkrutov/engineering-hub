@@ -4,8 +4,8 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# Enable non-free repos and install dependencies needed by python-magic and rarfile
-RUN sed -i 's/ main/ main contrib non-free/g' /etc/apt/sources.list && \
+# Create sources list to enable non-free, then install dependencies
+RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free" > /etc/apt/sources.list && \
     apt-get update && \
     apt-get install -y libmagic1 unrar --no-install-recommends
 
