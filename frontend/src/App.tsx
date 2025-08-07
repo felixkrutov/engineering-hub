@@ -373,7 +373,7 @@ function App() {
             role: 'model',
             content: '',
             displayedContent: '',
-            thinking_steps: [],
+            thinking_steps: [{ type: 'log', content: 'Задача поставлена в очередь...' }],
             jobId: job_id,
         };
         setMessages(prevMessages => [...prevMessages, modelPlaceholder]);
