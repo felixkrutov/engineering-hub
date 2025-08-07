@@ -198,10 +198,6 @@ function App() {
                   if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                   setIsLoading(false);
                   setCurrentJobId(null);
-                  // On completion, reload the chat to get the final persisted state
-                  if (currentChatId) {
-                    await selectChat(currentChatId);
-                  }
               }
           } catch (error) {
               console.error('Polling error:', error);
