@@ -409,25 +409,32 @@ async def get_chat_history(conversation_id: str):
     
     try:
         with open(history_file_path, 'r', encoding='utf-8') as f:
-            # Handle empty files by reading content first
+            # First, read the content to see if the file is empty
             content = f.read()
-            if not content:
-                return []
+            if not content.strip():
+                return [] # Return empty list for empty or whitespace-only files
+            # If not empty, try to parse
             history_data = json.loads(content)
-            
+        
         formatted_history = []
         for item in history_data:
             # Robustly get content from parts
             parts = item.get("parts", [])
-            content = parts[0] if parts else ""
-            message_data = {"role": item.get("role"), "content": content}
+            content_text = parts[0] if parts else ""
+            
+            message_data = {"role": item.get("role"), "content": content_text}
 
             if 'thinking_steps' in item and item['thinking_steps']:
                 message_data['thinking_steps'] = item['thinking_steps']
             formatted_history.append(message_data)
         return formatted_history
+        
     except json.JSONDecodeError:
         logger.warning(f"Could not parse corrupted chat history file for conversation_id: {conversation_id}. Returning empty history.")
+        return []
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while reading history for {conversation_id}: {e}", exc_info=True)
+        # For any other unexpected error, also return an empty list to prevent frontend crash
         return []
 
 @app.delete("/api/v1/chats/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
