@@ -230,8 +230,12 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
             logger.warning(f"Could not load/parse history for {conversation_id}: {e}. Starting fresh.")
             loaded_history = []
     
-    # 3. Start a single, continuous chat session with the loaded history.
-    chat_session = model.start_chat(history=loaded_history)
+    # 3. Sanitize the history for the Gemini API by removing the custom 'thinking_steps' field.
+    # This is an in-memory operation; 'loaded_history' remains unchanged for saving back to disk.
+    sanitized_history = [{k: v for k, v in msg.items() if k != 'thinking_steps'} for msg in loaded_history]
+
+    # 4. Start a single, continuous chat session with the sanitized history.
+    chat_session = model.start_chat(history=sanitized_history)
     
     for iteration in range(MAX_ITERATIONS):
         if r_client.hget(job_id, "status") == "cancelled":
