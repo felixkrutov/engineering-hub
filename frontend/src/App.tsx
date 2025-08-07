@@ -316,59 +316,84 @@ function App() {
   };
 
   const handleSendMessage = async () => {
-      const messageText = userInput.trim();
-      if (!messageText || isLoading) return;
-  
-      if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-      }
-  
-      setIsLoading(true);
-      setUserInput('');
+    const messageText = userInput.trim();
+    if (!messageText || isLoading) return;
 
-      let conversationId = currentChatId;
-      const isNewChat = !conversationId;
-  
-      try {
-          if (isNewChat) {
-              const chatResponse = await fetch(`${API_BASE_URL}/v1/chats`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ title: messageText.substring(0, 50) || "Новый чат" }),
-              });
-              if (!chatResponse.ok) throw new Error('Failed to create a new chat.');
-              
-              const newChatInfo: Chat = await chatResponse.json();
-              conversationId = newChatInfo.id;
-          }
-  
-          if (!conversationId) throw new Error("Missing conversation ID to create a job.");
-  
-          // The user message is now added to history on the backend immediately
-          const jobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                  message: messageText, conversation_id: conversationId,
-                  file_id: activeFileId, use_agent_mode: isAgentMode,
-              }),
-          });
-          setActiveFileId(null);
-          if (!jobResponse.ok) throw new Error(`Failed to create job: ${await jobResponse.text()}`);
-  
-          // SUCCESS: Now, reload the chat from the single source of truth
-          if (isNewChat) {
-              await loadChats(); // Load new chat list
-          }
-          await selectChat(conversationId);
-  
-      } catch (error) {
-          console.error('Error during message sending process:', error);
-          // You might want to add a temporary error message to the UI here
-      } finally {
-          // selectChat will handle the final loading state
-      }
-  };
+    // --- Optimistic UI Update ---
+    const userMessage: Message = {
+      id: `local-${uuidv4()}`,
+      role: 'user',
+      content: messageText,
+      displayedContent: messageText,
+    };
+    // Add user message to UI immediately and clear input
+    setMessages(prevMessages => [...prevMessages, userMessage]);
+    setUserInput('');
+    setIsLoading(true);
+    // -----------------------------
+
+    if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+    }
+
+    let conversationId = currentChatId;
+    const isNewChat = !conversationId;
+
+    try {
+        if (isNewChat) {
+            const chatResponse = await fetch(`${API_BASE_URL}/v1/chats`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: messageText.substring(0, 50) || "Новый чат" }),
+            });
+            if (!chatResponse.ok) throw new Error('Failed to create a new chat.');
+            
+            const newChatInfo: Chat = await chatResponse.json();
+            conversationId = newChatInfo.id;
+            setCurrentChatId(conversationId); // Set the new chat as active
+            await loadChats(); // Refresh the sidebar
+        }
+
+        if (!conversationId) throw new Error("Missing conversation ID to create a job.");
+
+        // Backend job creation
+        const jobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: messageText, conversation_id: conversationId,
+                file_id: activeFileId, use_agent_mode: isAgentMode,
+            }),
+        });
+        setActiveFileId(null);
+        if (!jobResponse.ok) throw new Error(`Failed to create job: ${await jobResponse.text()}`);
+
+        const { job_id } = await jobResponse.json();
+        setCurrentJobId(job_id);
+
+        // --- Add Model Placeholder and Start Polling ---
+        const modelPlaceholder: Message = {
+            id: `model-${job_id}`,
+            role: 'model',
+            content: '',
+            displayedContent: '',
+            thinking_steps: [],
+            jobId: job_id,
+        };
+        setMessages(prevMessages => [...prevMessages, modelPlaceholder]);
+        startPolling(job_id, isNewChat);
+        // ---------------------------------------------
+
+    } catch (error) {
+        console.error('Error during message sending process:', error);
+        // Revert optimistic update on failure
+        setMessages(prev => prev.filter(m => m.id !== userMessage.id)); 
+        setUserInput(messageText); // Restore user input
+        setIsLoading(false);
+        // Optionally add a temporary error message to the UI
+    }
+    // NOTE: The 'finally' block is removed as setIsLoading is now handled by the polling logic.
+};
 
   const handleCancelJob = async () => {
     if (!currentJobId) return;
