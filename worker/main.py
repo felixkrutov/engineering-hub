@@ -90,7 +90,7 @@ def update_job_status(r_client: redis.Redis, job_id: str, new_thought: str = Non
 # --- Config Helper ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
-        executor=AgentSettings(model_name='gemini-1.5-pro-latest', system_prompt='You are a helpful assistant.'),
+        executor=AgentSettings(model_name='gemini-2.5-pro', system_prompt='You are a helpful assistant.'),
         controller=AgentSettings(model_name='openai/gpt-4o-mini', system_prompt='You are a helpful assistant.')
     )
     if not os.path.exists(CONFIG_FILE):
@@ -196,7 +196,7 @@ async def determine_file_context(user_message: str, all_files: List[Dict]) -> Op
     files_summary = "\n".join([f"- Имя файла: '{f.get('name', 'N/A')}', ID: '{f.get('id', 'N/A')}'" for f in all_files])
     prompt = f"You are a classification assistant. Your task is to determine if a user's query refers to a specific file from a provided list. Here is the list of available files:\n\n<file_list>\n{files_summary}\n</file_list>\n\nUser's query: <query>{user_message}</query>\n\nIf the query explicitly or implicitly refers to one of the files from the list, respond with ONLY the file's ID from the list. If it does not refer to any specific file, or if you are unsure, respond with 'None'."
     try:
-        context_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        context_model = genai.GenerativeModel('gemini-2.5-flash')
         response = await run_with_retry(context_model.generate_content_async, prompt)
         file_id_match = response.text.strip()
         if file_id_match in {f.get('id') for f in all_files}:
@@ -377,8 +377,8 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
     # Load chat history to maintain conversation context.
     sanitized_history = load_and_prepare_history(conversation_id)
 
-    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-1.5-flash-latest'...")
-    model = genai.GenerativeModel(model_name='gemini-1.5-flash-latest')
+    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-2.5-flash'...")
+    model = genai.GenerativeModel(model_name='gemini-2.5-flash')
     chat_session = model.start_chat(history=sanitized_history)
 
     update_job_status(r_client, job_id, new_thought="Отправка запроса в модель...")
