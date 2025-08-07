@@ -15,6 +15,10 @@ const AgentThoughts: React.FC<AgentThoughtsProps> = ({ steps, defaultCollapsed, 
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   const contentRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    setIsCollapsed(defaultCollapsed);
+  }, [defaultCollapsed]);
+
   // 1. Улучшаем эффект для плавной прокрутки вниз
   useEffect(() => {
     const container = contentRef.current;
