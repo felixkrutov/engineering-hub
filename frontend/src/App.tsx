@@ -229,11 +229,11 @@ function App() {
         if (!historyRes.ok) throw new Error(`Failed to fetch chat history: ${historyRes.statusText}`);
         
         const historyData = await historyRes.json();
-        const historyMessages: Message[] = historyData.map((m: any) => ({
-            id: uuidv4(),
+        const historyMessages: Message[] = historyData.map((m: any, index: number) => ({
+            id: `${chatId}-${index}`,
             role: m.role,
-            content: m.content || '',
-            displayedContent: m.content || '',
+            content: m.parts.join('\n') || '',
+            displayedContent: m.parts.join('\n') || '',
             thinking_steps: m.thinking_steps || []
         }));
         
@@ -478,7 +478,7 @@ function App() {
                               {msg.role === 'model' && msg.thinking_steps && msg.thinking_steps.length > 0 && (
                                 <AgentThoughts
                                   steps={msg.thinking_steps}
-                                  defaultCollapsed={!!msg.jobId}
+                                  defaultCollapsed={!msg.jobId}
                                 />
                               )}
                               <p className="content">{msg.displayedContent}</p>
