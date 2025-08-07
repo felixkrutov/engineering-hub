@@ -421,11 +421,19 @@ async def get_chat_history(conversation_id: str):
             # Robustly get content from parts
             parts = item.get("parts", [])
             content_text = parts[0] if parts else ""
-            
-            message_data = {"role": item.get("role"), "content": content_text}
+
+            # Ensure 'sources' key is always present, defaulting to an empty list
+            sources = item.get("sources", [])
+
+            message_data = {
+                "role": item.get("role"), 
+                "content": content_text,
+                "sources": sources # This line is critical
+            }
 
             if 'thinking_steps' in item and item['thinking_steps']:
                 message_data['thinking_steps'] = item['thinking_steps']
+
             formatted_history.append(message_data)
         return formatted_history
         
