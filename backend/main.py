@@ -154,7 +154,7 @@ Analyze the user's query. If it explicitly or implicitly refers to one of the fi
 If the query does not refer to any specific file, respond with the exact word "None". Do not provide any other text or explanation.
 """
     try:
-        context_model = genai.GenerativeModel('gemini-1.5-flash')
+        context_model = genai.GenerativeModel('gemini-2.5-flash')
         # Use the retry helper for the API call
         response = await run_with_retry(context_model.generate_content_async, prompt)
         
