@@ -19,6 +19,7 @@ interface Message {
   content: string;
   displayedContent: string;
   thinking_steps?: Thought[];
+  sources?: string[];
 }
 
 interface ModalState {
@@ -232,9 +233,10 @@ function App() {
         const historyMessages: Message[] = historyData.map((m: any, index: number) => ({
             id: `${chatId}-${index}`,
             role: m.role,
-            content: m.parts.join('\n') || '',
-            displayedContent: m.parts.join('\n') || '',
-            thinking_steps: m.thinking_steps || []
+            content: m.content || '', // Use the 'content' field from the backend
+            displayedContent: m.content || '',
+            thinking_steps: m.thinking_steps || [],
+            sources: m.sources || [] // Defensively get sources, default to empty array
         }));
         
         const activeJobRes = await fetch(`${API_BASE_URL}/v1/chats/${chatId}/active_job`);
@@ -482,6 +484,13 @@ function App() {
                                 />
                               )}
                               <p className="content">{msg.displayedContent}</p>
+                              {/* Defensive rendering of sources */}
+                              {msg.sources && msg.sources.length > 0 && (
+                                <div className="message-sources">
+                                  <strong>Источники: </strong>
+                                  <span>{msg.sources.join(', ')}</span>
+                                </div>
+                              )}
                           </div>
                       </div>
                   ))
