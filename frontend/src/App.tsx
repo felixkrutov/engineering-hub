@@ -13,7 +13,7 @@ interface Chat {
 }
 
 interface Message {
-  id: string;
+  id:string;
   jobId?: string; // Unique ID for the currently running job
   role: 'user' | 'model' | 'error';
   content: string;
