@@ -59,12 +59,12 @@ def update_job_status(r_client: redis.Redis, job_id: str, new_thought: str = Non
         if new_thought:
             current_thoughts_raw = r_client.hget(job_id, "thoughts")
             current_thoughts = json.loads(current_thoughts_raw) if current_thoughts_raw else []
-            current_thoughts.append({"type": "thought", "content": new_thought})
+            current_thoughts.append({"type": "log", "content": new_thought}) # Use log type for backend thoughts
             update_data["thoughts"] = json.dumps(current_thoughts)
 
         # Check current status first to prevent overwriting a terminal state
         current_job_status = r_client.hget(job_id, "status")
-        is_terminal = current_job_status in ["complete", "failed", "cancelled"]
+        is_terminal = current_job_status in [b"complete", b"failed", b"cancelled"] if isinstance(current_job_status, bytes) else current_job_status in ["complete", "failed", "cancelled"]
 
         if is_terminal:
             logger.warning(f"Job {job_id} is in a terminal state ({current_job_status}). Only updating thoughts.")
@@ -90,8 +90,8 @@ def update_job_status(r_client: redis.Redis, job_id: str, new_thought: str = Non
 # --- Config Helper ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
-        executor=AgentSettings(model_name='gemini-2.5-pro', system_prompt='You are a helpful assistant.'),
-        controller=AgentSettings(model_name='o4-mini', system_prompt='You are a helpful assistant.')
+        executor=AgentSettings(model_name='gemini-1.5-pro-latest', system_prompt='You are a helpful assistant.'),
+        controller=AgentSettings(model_name='openai/gpt-4o-mini', system_prompt='You are a helpful assistant.')
     )
     if not os.path.exists(CONFIG_FILE):
         return default_config
@@ -171,12 +171,32 @@ def list_all_files_summary() -> str:
 async def run_with_retry(func, *args, **kwargs):
     return await func(*args, **kwargs)
 
+def load_and_prepare_history(conversation_id: str) -> List[Dict]:
+    """Loads and sanitizes chat history from a file."""
+    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
+    if not os.path.exists(history_file_path):
+        return []
+    
+    try:
+        with open(history_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            if not content:
+                return []
+            loaded_history = json.loads(content)
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"Could not load/parse history for {conversation_id}: {e}. Starting fresh.")
+        return []
+    
+    # Sanitize the history for the Gemini API by removing the custom 'thinking_steps' field.
+    sanitized_history = [{k: v for k, v in msg.items() if k != 'thinking_steps'} for msg in loaded_history]
+    return sanitized_history
+
 async def determine_file_context(user_message: str, all_files: List[Dict]) -> Optional[str]:
     if not all_files: return None
     files_summary = "\n".join([f"- Имя файла: '{f.get('name', 'N/A')}', ID: '{f.get('id', 'N/A')}'" for f in all_files])
-    prompt = f"You are a classification assistant... (full prompt from original file)... If it refers to one of the files from the list, respond with ONLY the file's ID... If not, respond with 'None'."
+    prompt = f"You are a classification assistant. Your task is to determine if a user's query refers to a specific file from a provided list. Here is the list of available files:\n\n<file_list>\n{files_summary}\n</file_list>\n\nUser's query: <query>{user_message}</query>\n\nIf the query explicitly or implicitly refers to one of the files from the list, respond with ONLY the file's ID from the list. If it does not refer to any specific file, or if you are unsure, respond with 'None'."
     try:
-        context_model = genai.GenerativeModel('gemini-2.5-flash')
+        context_model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = await run_with_retry(context_model.generate_content_async, prompt)
         file_id_match = response.text.strip()
         if file_id_match in {f.get('id') for f in all_files}:
@@ -217,24 +237,10 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
         system_instruction=config.executor.system_prompt
     )
     
-    # 2. Load the existing chat history from file to provide context to the agent.
-    history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
-    loaded_history = []
-    if os.path.exists(history_file_path):
-        try:
-            with open(history_file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if content:
-                    loaded_history = json.loads(content)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Could not load/parse history for {conversation_id}: {e}. Starting fresh.")
-            loaded_history = []
-    
-    # 3. Sanitize the history for the Gemini API by removing the custom 'thinking_steps' field.
-    # This is an in-memory operation; 'loaded_history' remains unchanged for saving back to disk.
-    sanitized_history = [{k: v for k, v in msg.items() if k != 'thinking_steps'} for msg in loaded_history]
+    # 2. Load and prepare the chat history.
+    sanitized_history = load_and_prepare_history(conversation_id)
 
-    # 4. Start a single, continuous chat session with the sanitized history.
+    # 3. Start a single, continuous chat session with the sanitized history.
     chat_session = model.start_chat(history=sanitized_history)
     
     for iteration in range(MAX_ITERATIONS):
@@ -290,7 +296,7 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
                 fc = part.function_call
                 tool_map = {"analyze_document": analyze_document, "search_knowledge_base": search_knowledge_base, "list_all_files_summary": list_all_files_summary}
                 tool_func = tool_map.get(fc.name)
-                tool_result = tool_func(**fc.args) if tool_func else f"Ошибка: Неизвестный инструмент '{fc.name}'."
+                tool_result = tool_func(**dict(fc.args)) if tool_func else f"Ошибка: Неизвестный инструмент '{fc.name}'."
                 tool_context += f"Вызов {fc.name} с {fc.args} дал результат:\n{tool_result}\n\n"
                 update_job_status(r_client, job_id, new_thought=f"Обращаюсь к базе знаний с запросом: {fc.args.get('query', '...')}")
                 response = await run_with_retry(chat_session.send_message_async, gap.Part(function_response=gap.FunctionResponse(name=fc.name, response={'content': tool_result})))
@@ -331,26 +337,26 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     # --- ATOMIC FINALIZATION AND CLEANUP ---
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     try:
-        with open(history_file_path, 'r+', encoding='utf-8') as f:
-            try:
+        # Load existing history to append to it
+        if os.path.exists(history_file_path):
+            with open(history_file_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
                 if not isinstance(history, list): history = []
-            except json.JSONDecodeError:
-                history = []
-            
-            # Prepare the model's message with thoughts
-            final_thoughts_raw = r_client.hget(job_id, "thoughts")
-            final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
-            model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
-            
-            # Append ONLY the model's message
-            history.append(model_message.model_dump(exclude_none=True))
-            
-            f.seek(0)
+        else:
+            history = []
+        
+        # Prepare the model's message with thoughts
+        final_thoughts_raw = r_client.hget(job_id, "thoughts")
+        final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+        model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+        
+        history.append(model_message.model_dump(exclude_none=True))
+        
+        # Write the updated history back to the file
+        with open(history_file_path, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
-            f.truncate()
-            
-            logger.info(f"Task for job {job_id} finished. History saved.")
+        
+        logger.info(f"Task for job {job_id} finished. History saved.")
 
     except Exception as e:
         logger.error(f"Failed to save model response to history for job {job_id}: {e}", exc_info=True)
@@ -368,9 +374,12 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
     request_message = request_payload['message']
     conversation_id = request_payload['conversation_id']
 
-    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-2.5-flash'...")
-    model = genai.GenerativeModel(model_name='gemini-2.5-flash')
-    chat_session = model.start_chat(history=[])
+    # Load chat history to maintain conversation context.
+    sanitized_history = load_and_prepare_history(conversation_id)
+
+    update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-1.5-flash-latest'...")
+    model = genai.GenerativeModel(model_name='gemini-1.5-flash-latest')
+    chat_session = model.start_chat(history=sanitized_history)
 
     update_job_status(r_client, job_id, new_thought="Отправка запроса в модель...")
     response = await run_with_retry(chat_session.send_message_async, request_message)
@@ -381,26 +390,26 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
     # --- ATOMIC FINALIZATION AND CLEANUP ---
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     try:
-        with open(history_file_path, 'r+', encoding='utf-8') as f:
-            try:
+        # Load existing history to append to it
+        if os.path.exists(history_file_path):
+            with open(history_file_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
                 if not isinstance(history, list): history = []
-            except json.JSONDecodeError:
-                history = []
-            
-            # Prepare the model's message with thoughts
-            final_thoughts_raw = r_client.hget(job_id, "thoughts")
-            final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
-            model_message = Message(role="model", parts=[final_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
-            
-            # Append ONLY the model's message
-            history.append(model_message.model_dump(exclude_none=True))
-            
-            f.seek(0)
+        else:
+            history = []
+        
+        # Prepare the model's message with thoughts
+        final_thoughts_raw = r_client.hget(job_id, "thoughts")
+        final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
+        model_message = Message(role="model", parts=[final_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
+        
+        history.append(model_message.model_dump(exclude_none=True))
+        
+        # Write the updated history back to the file
+        with open(history_file_path, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
-            f.truncate()
-            
-            logger.info(f"Task for job {job_id} finished. History saved.")
+        
+        logger.info(f"Task for job {job_id} finished. History saved.")
 
     except Exception as e:
         logger.error(f"Failed to save model response to history for job {job_id}: {e}", exc_info=True)
