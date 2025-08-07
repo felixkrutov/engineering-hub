@@ -4,8 +4,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# Install system dependencies needed by python-magic
-RUN apt-get update && apt-get install -y libmagic1 unrar
+# Enable non-free repos and install dependencies needed by python-magic and rarfile
+RUN sed -i 's/ main/ main contrib non-free/g' /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y libmagic1 unrar --no-install-recommends
 
 RUN pip install --no-cache-dir -r requirements.txt
 
