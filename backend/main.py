@@ -1,3 +1,9 @@
+code
+Python
+download
+content_copy
+expand_less
+
 import logging
 import os
 import json
@@ -406,18 +412,29 @@ async def get_chat_history(conversation_id: str):
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     if not os.path.exists(history_file_path):
         raise HTTPException(status_code=404, detail="Chat history not found.")
+    
     try:
         with open(history_file_path, 'r', encoding='utf-8') as f:
-            history_data = json.load(f)
+            # Handle empty files by reading content first
+            content = f.read()
+            if not content:
+                return []
+            history_data = json.loads(content)
+            
         formatted_history = []
         for item in history_data:
-            message_data = {"role": item.get("role"), "content": item.get("parts", [""])[0] }
+            # Robustly get content from parts
+            parts = item.get("parts", [])
+            content = parts[0] if parts else ""
+            message_data = {"role": item.get("role"), "content": content}
+
             if 'thinking_steps' in item and item['thinking_steps']:
                 message_data['thinking_steps'] = item['thinking_steps']
             formatted_history.append(message_data)
         return formatted_history
-    except (json.JSONDecodeError, FileNotFoundError):
-        raise HTTPException(status_code=500, detail="Could not read or parse chat history file.")
+    except json.JSONDecodeError:
+        logger.warning(f"Could not parse corrupted chat history file for conversation_id: {conversation_id}. Returning empty history.")
+        return []
 
 @app.delete("/api/v1/chats/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_chat(conversation_id: str):
