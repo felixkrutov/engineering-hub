@@ -28,10 +28,13 @@ services:
     volumes:
       - ./backend:/app
       - ./config.json:/app_config/config.json
-      - ./chat_histories:/app/chat_histories # <--- ИЗМЕНЕНИЕ ЗДЕСЬ
+      - ./chat_histories:/app/chat_histories
     depends_on:
       - redis
       - db
+    # ИСПРАВЛЕНИЕ: Добавлена команда для запуска веб-сервера Uvicorn.
+    # Он будет слушать порт 8000 внутри контейнера, чтобы nginx мог к нему подключиться.
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
 
   db:
     container_name: engineering-hub-db
@@ -59,10 +62,13 @@ services:
       - ./worker:/app
       - ./backend/kb_service:/app/kb_service
       - ./config.json:/app_config/config.json
-      - ./chat_histories:/app/chat_histories # <--- И ИЗМЕНЕНИЕ ЗДЕСЬ
+      - ./chat_histories:/app/chat_histories
     depends_on:
       - redis
       - db
+    # ДОБАВЛЕНИЕ: Добавлена команда для явного запуска скрипта воркера.
+    # Убедитесь, что `main.py` - это правильный файл для запуска вашего воркера.
+    command: python main.py
 
 volumes:
   postgres_data:
