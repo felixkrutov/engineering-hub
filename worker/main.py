@@ -13,18 +13,14 @@ from typing import List, Dict, Optional, Any
 from google.api_core.exceptions import ResourceExhausted, InternalServerError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-# --- Setup Logging and Environment ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-# --- Load all necessary components from kb_service ---
-# The docker-compose volume mount makes this possible: `...:/app/kb_service`
 from kb_service.connector import MockConnector
 from kb_service.yandex_connector import YandexDiskConnector
 from kb_service.indexer import KnowledgeBaseIndexer
 
-# --- Pydantic Models ---
 class AgentSettings(BaseModel):
     model_name: str
     system_prompt: str
@@ -42,7 +38,6 @@ class Message(BaseModel):
     parts: List[str]
     thinking_steps: Optional[List[ThinkingStep]] = None
 
-# --- Constants ---
 HISTORY_DIR = "/app/chat_histories"
 CONFIG_FILE = "/app_config/config.json"
 CONTROLLER_SYSTEM_PROMPT = "You are a helpful assistant."
@@ -50,32 +45,27 @@ CONTROLLER_SYSTEM_PROMPT = "You are a helpful assistant."
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
 
-# --- Redis Helper Functions ---
 def update_job_status(r_client: redis.Redis, job_id: str, new_thought: str = None, final_answer: str = None, status: str = None):
     try:
         update_data = {}
         
-        # Always handle thoughts update, it's the main purpose of this function during processing
         if new_thought:
             current_thoughts_raw = r_client.hget(job_id, "thoughts")
             current_thoughts = json.loads(current_thoughts_raw) if current_thoughts_raw else []
-            current_thoughts.append({"type": "log", "content": new_thought}) # Use log type for backend thoughts
+            current_thoughts.append({"type": "log", "content": new_thought})
             update_data["thoughts"] = json.dumps(current_thoughts)
 
-        # Check current status first to prevent overwriting a terminal state
         current_job_status = r_client.hget(job_id, "status")
         is_terminal = current_job_status in [b"complete", b"failed", b"cancelled"] if isinstance(current_job_status, bytes) else current_job_status in ["complete", "failed", "cancelled"]
 
         if is_terminal:
             logger.warning(f"Job {job_id} is in a terminal state ({current_job_status}). Only updating thoughts.")
         else:
-            # Only add final_answer and status if the job is not in a terminal state
             if final_answer is not None:
                 update_data["final_answer"] = final_answer
             if status is not None:
                 update_data["status"] = status
 
-        # If nothing is left to update, exit.
         if not update_data:
             return
             
@@ -87,7 +77,6 @@ def update_job_status(r_client: redis.Redis, job_id: str, new_thought: str = Non
     except Exception as e:
         logger.error(f"Failed to update status for job {job_id}: {e}")
 
-# --- Config Helper ---
 def load_config() -> AppConfig:
     default_config = AppConfig(
         executor=AgentSettings(model_name='gemini-2.5-pro', system_prompt='You are a helpful assistant.'),
@@ -103,22 +92,18 @@ def load_config() -> AppConfig:
         logger.warning(f"Could not load config file due to: {e}. Using defaults.")
         return default_config
 
-# --- AI Client Initializations ---
 logger.info("Initializing AI clients and services...")
-# Knowledge Base
 YANDEX_TOKEN = os.getenv("YANDEX_DISK_API_TOKEN")
 kb_connector = YandexDiskConnector(token=YANDEX_TOKEN) if YANDEX_TOKEN else MockConnector()
 kb_indexer = KnowledgeBaseIndexer(connector=kb_connector)
-kb_indexer.build_index()  # Build index on worker startup
+kb_indexer.build_index()
 
-# Gemini (Executor)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 else:
     raise ValueError("GEMINI_API_KEY environment variable not set!")
 
-# OpenAI/OpenRouter (Controller)
 CONTROLLER_PROVIDER = os.getenv("CONTROLLER_PROVIDER", "openai").lower()
 CONTROLLER_API_KEY = os.getenv("OPENROUTER_API_KEY") if CONTROLLER_PROVIDER == "openrouter" else os.getenv("OPENAI_API_KEY")
 CONTROLLER_BASE_URL = "https://openrouter.ai/api/v1" if CONTROLLER_PROVIDER == "openrouter" else "https://api.openai.com/v1"
@@ -128,7 +113,6 @@ if controller_client:
 else:
     logger.warning("Controller client not configured. Quality Control will be skipped.")
 
-# --- AI Tools Definition ---
 def analyze_document(file_id: str, query: str) -> str:
     logger.info(f"TOOL CALL: analyze_document for file_id: {file_id} with query: '{query}'")
     try:
@@ -162,7 +146,6 @@ def list_all_files_summary() -> str:
         logger.error(f"Error in list_all_files_summary tool: {e}", exc_info=True)
         return f"ОШИБКА: Не удалось получить список файлов: {e}"
 
-# --- AI Helper Functions ---
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=60),
     stop=stop_after_attempt(3),
@@ -187,7 +170,6 @@ def load_and_prepare_history(conversation_id: str) -> List[Dict]:
         logger.warning(f"Could not load/parse history for {conversation_id}: {e}. Starting fresh.")
         return []
     
-    # Sanitize the history for the Gemini API by removing the custom 'thinking_steps' field.
     sanitized_history = [{k: v for k, v in msg.items() if k != 'thinking_steps'} for msg in loaded_history]
     return sanitized_history
 
@@ -207,8 +189,6 @@ async def determine_file_context(user_message: str, all_files: List[Dict]) -> Op
         logger.error(f"Error during context determination: {e}")
         return None
 
-# --- AI Core Logic ---
-
 async def handle_complex_task(job_id: str, request_payload: dict, r_client: redis.Redis, config: AppConfig):
     """
     Handles the full agentic workflow with tools, iterations, and quality control.
@@ -225,22 +205,16 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     request_file_id = request_payload.get('file_id')
     conversation_id = request_payload['conversation_id']
 
-    # --- AGENT LOOP SETUP (MOVED BEFORE THE LOOP) ---
-    
-    # Log the exact system prompt being used for this job for diagnostics.
     logger.info(f"EXECUTOR PROMPT FOR JOB {job_id}: '{config.executor.system_prompt}'")
 
-    # 1. Initialize the model once.
     model = genai.GenerativeModel(
         model_name=config.executor.model_name,
         tools=[analyze_document, search_knowledge_base, list_all_files_summary],
         system_instruction=config.executor.system_prompt
     )
     
-    # 2. Load and prepare the chat history.
     sanitized_history = load_and_prepare_history(conversation_id)
 
-    # 3. Start a single, continuous chat session with the sanitized history.
     chat_session = model.start_chat(history=sanitized_history)
     
     for iteration in range(MAX_ITERATIONS):
@@ -248,12 +222,9 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
             logger.info(f"Job {job_id} was cancelled during iteration {iteration + 1}. Aborting.")
             return
 
-        # STAGE 1: EXECUTOR - Planning and Context Analysis
         if iteration == 0:
-            # Step 1: Announce planning phase
             update_job_status(r_client, job_id, new_thought="[Анализ] Анализирую запрос и планирую действия...")
             
-            # Step 2: Perform contextual document search (if no file is specified)
             if not request_file_id:
                 update_job_status(r_client, job_id, new_thought="[Анализ] Ищу возможные отсылки к документам в базе знаний...")
                 all_files = kb_indexer.get_all_files()
@@ -264,7 +235,6 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
                     file_name = file_info.get('name', contextual_file_id) if file_info else contextual_file_id
                     update_job_status(r_client, job_id, new_thought=f"[Анализ] Контекст определен. Работаю с файлом: '{file_name}'")
         else:
-            # This part handles subsequent quality control iterations
             update_job_status(r_client, job_id, new_thought=f"[Контроль] Получены правки (Итерация {iteration+1}). Начинаю доработку...")
         
         prompt_for_executor = request_message
@@ -275,7 +245,7 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
         
         response = await run_with_retry(chat_session.send_message_async, prompt_for_executor)
         executor_answer = "Исполнитель не смог сформировать ответ."
-        tool_context = "" # Reset tool context for each iteration's controller review
+        tool_context = ""
 
         while True:
             if r_client.hget(job_id, "status") == "cancelled":
@@ -307,7 +277,6 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
         
         final_approved_answer = executor_answer
 
-        # STAGE 2: CONTROLLER
         if not controller_client:
             update_job_status(r_client, job_id, new_thought="Контроль качества пропущен (не настроен).")
             break
@@ -331,13 +300,10 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
             if iteration == MAX_ITERATIONS - 1:
                 logger.warning("Max iterations reached for job {job_id}. Using the last answer.")
 
-    # FINALIZATION STAGE
     update_job_status(r_client, job_id, final_answer=final_approved_answer, status="complete")
     
-    # --- ATOMIC FINALIZATION AND CLEANUP ---
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     try:
-        # Load existing history to append to it
         if os.path.exists(history_file_path):
             with open(history_file_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
@@ -345,14 +311,12 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
         else:
             history = []
         
-        # Prepare the model's message with thoughts
         final_thoughts_raw = r_client.hget(job_id, "thoughts")
         final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
         model_message = Message(role="model", parts=[final_approved_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
         
         history.append(model_message.model_dump(exclude_none=True))
         
-        # Write the updated history back to the file
         with open(history_file_path, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
         
@@ -361,7 +325,6 @@ async def handle_complex_task(job_id: str, request_payload: dict, r_client: redi
     except Exception as e:
         logger.error(f"Failed to save model response to history for job {job_id}: {e}", exc_info=True)
     finally:
-        # CRITICAL: Clean up the active job link to prevent ghost jobs
         active_job_key = f"active_job_for_convo:{conversation_id}"
         if r_client.get(active_job_key) == job_id:
              r_client.delete(active_job_key)
@@ -374,7 +337,6 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
     request_message = request_payload['message']
     conversation_id = request_payload['conversation_id']
 
-    # Load chat history to maintain conversation context.
     sanitized_history = load_and_prepare_history(conversation_id)
 
     update_job_status(r_client, job_id, new_thought="Инициализация модели 'gemini-2.5-flash'...")
@@ -387,10 +349,8 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
 
     update_job_status(r_client, job_id, new_thought="Ответ сгенерирован в простом режиме.", final_answer=final_answer, status="complete")
 
-    # --- ATOMIC FINALIZATION AND CLEANUP ---
     history_file_path = os.path.join(HISTORY_DIR, f"{conversation_id}.json")
     try:
-        # Load existing history to append to it
         if os.path.exists(history_file_path):
             with open(history_file_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
@@ -398,14 +358,12 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
         else:
             history = []
         
-        # Prepare the model's message with thoughts
         final_thoughts_raw = r_client.hget(job_id, "thoughts")
         final_thinking_steps = json.loads(final_thoughts_raw) if final_thoughts_raw else []
         model_message = Message(role="model", parts=[final_answer], thinking_steps=[ThinkingStep(**step) for step in final_thinking_steps])
         
         history.append(model_message.model_dump(exclude_none=True))
         
-        # Write the updated history back to the file
         with open(history_file_path, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
         
@@ -414,7 +372,6 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
     except Exception as e:
         logger.error(f"Failed to save model response to history for job {job_id}: {e}", exc_info=True)
     finally:
-        # CRITICAL: Clean up the active job link to prevent ghost jobs
         active_job_key = f"active_job_for_convo:{conversation_id}"
         if r_client.get(active_job_key) == job_id:
              r_client.delete(active_job_key)
@@ -424,7 +381,6 @@ async def handle_simple_chat(job_id: str, request_payload: dict, r_client: redis
 async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Redis):
     try:
         config = load_config()
-        # Get the flag from the payload, defaulting to False for safety
         use_agent_mode = request_payload.get('use_agent_mode', False)
 
         if use_agent_mode:
@@ -438,7 +394,6 @@ async def process_ai_task(job_id: str, request_payload: dict, r_client: redis.Re
         logger.error(f"Critical error during AI task for job {job_id}: {e}", exc_info=True)
         update_job_status(r_client, job_id, new_thought=f"Критическая ошибка: {e}", status="failed")
 
-# --- Main Worker Loop ---
 async def main_worker_loop():
     logger.info("AI Worker is running and waiting for tasks.")
     redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=6379, db=0, decode_responses=True)
