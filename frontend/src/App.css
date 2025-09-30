@@ -262,21 +262,21 @@ body[data-theme="light"] .app-wrapper,
     margin: 0 auto;
     position: relative;
     display: flex;
-    flex-direction: column; /* Stack top and bottom rows vertically */
-    background-color: #343a40; /* Your input background color */
-    border-radius: 18px; /* Slightly less rounded might look better */
+    flex-direction: column;
+    background-color: #343a40;
+    border-radius: 18px;
     padding: 10px;
     border: 1px solid #495057;
 }
 
 .input-top-row {
     display: flex;
-    align-items: flex-end; /* Align to bottom for multi-line text */
+    align-items: flex-end;
     width: 100%;
 }
 
 .user-input {
-    flex: 1; /* Makes it take up all available horizontal space */
+    flex: 1;
     background: transparent;
     border: none;
     color: var(--text-primary);
@@ -326,7 +326,7 @@ body[data-theme="light"] .app-wrapper,
     transition: background-color 0.2s ease;
 }
 .send-btn:hover:not(:disabled) {
-    background-color: #6a1bcd; /* Darken accent color on hover */
+    background-color: #6a1bcd;
 }
 .send-btn:disabled { background-color: #555; cursor: not-allowed; }
 
@@ -334,9 +334,9 @@ body[data-theme="light"] .app-wrapper,
     display: flex;
     align-items: center;
     width: 100%;
-    margin-top: 8px; /* Space between textarea and toolbar */
-    padding-top: 8px; /* Optional space with a line */
-    border-top: 1px solid #495057; /* Separator line */
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #495057;
 }
 
 .mode-toggle-btn {
@@ -356,7 +356,6 @@ body[data-theme="light"] .app-wrapper,
     color: #d0a3e8;
 }
 
-/* This is the crucial 'ON' state */
 .mode-toggle-btn.active {
     background-color: #8e44ad;
     color: #ffffff;
@@ -462,7 +461,6 @@ body[data-theme="light"] .app-wrapper,
     color: var(--text-primary);
 }
 
-/* Settings Modal Specifics */
 .settings-modal {
     max-width: 600px;
     display: flex;
@@ -536,7 +534,6 @@ body[data-theme="light"] .app-wrapper,
     justify-content: flex-end;
 }
 
-/* KB Search Specifics */
 .db-settings {
     display: flex;
     flex-direction: column;
@@ -658,7 +655,6 @@ body[data-theme="light"] .app-wrapper,
     color: white;
 }
 
-/* Agent Thoughts Component */
 .agent-thoughts-container {
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid var(--border-color);
@@ -716,7 +712,7 @@ body[data-theme="light"] .app-wrapper,
 }
 
 .agent-thoughts-content {
-  max-height: 500px; /* A large enough value to show all content */
+  max-height: 500px;
   overflow-y: auto;
   padding: 0.75rem;
   border-top: 1px solid var(--border-color);
@@ -727,7 +723,7 @@ body[data-theme="light"] .app-wrapper,
   background-color: rgba(0, 0, 0, 0.15);
   color: #ccc;
   transition: max-height 0.4s ease-in-out, opacity 0.4s ease-in-out, padding 0.4s ease-in-out;
-  overflow: hidden; /* Important for the max-height transition */
+  overflow: hidden;
 }
 
 .agent-thoughts-content.collapsed {
@@ -759,7 +755,6 @@ body[data-theme="light"] .app-wrapper,
     color: #333;
 }
 
-/* Typewriter Effect */
 @keyframes blink-caret {
   from, to { opacity: 0 }
   50% { opacity: 1 }
@@ -776,7 +771,6 @@ body[data-theme="light"] .app-wrapper,
   animation: none;
 }
 
-/* Styling for the Knowledge Base File List */
 .kb-file-list-container {
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -786,7 +780,7 @@ body[data-theme="light"] .app-wrapper,
 }
 
 .kb-file-list {
-  list-style-type: none; /* Removes the bullet points */
+  list-style-type: none;
   padding: 0;
   margin: 0;
 }
@@ -806,11 +800,11 @@ body[data-theme="light"] .app-wrapper,
 .kb-file-name {
   font-size: 0.9rem;
   color: var(--text-color-primary);
-  margin-right: 16px; /* Space between name and button */
+  margin-right: 16px;
 }
 
 .kb-use-btn {
-  padding: 4px 12px !important; /* Override default padding for a smaller button */
+  padding: 4px 12px !important;
   font-size: 0.8rem !important;
-  flex-shrink: 0; /* Prevents button from shrinking */
+  flex-shrink: 0;
 }
