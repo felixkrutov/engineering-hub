@@ -14,7 +14,7 @@ interface Chat {
 
 interface Message {
   id:string;
-  jobId?: string; // Unique ID for the currently running job
+  jobId?: string;
   role: 'user' | 'model' | 'error';
   content: string;
   displayedContent: string;
@@ -37,7 +37,6 @@ interface KnowledgeBaseFile {
   name: string;
 }
 
-// --- New Nested Configuration Types ---
 interface AgentSettings {
   model_name: string;
   system_prompt: string;
@@ -64,7 +63,6 @@ function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('ai');
 
-  // --- Refactored State for Nested Config ---
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [dirtyConfig, setDirtyConfig] = useState<AppConfig | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -86,7 +84,7 @@ function App() {
 
   useEffect(() => {
     if (isSettingsModalOpen && config) {
-        setDirtyConfig(JSON.parse(JSON.stringify(config))); // Deep copy
+        setDirtyConfig(JSON.parse(JSON.stringify(config)));
     }
   }, [isSettingsModalOpen, config]);
 
@@ -174,15 +172,14 @@ function App() {
               const jobStatus = await statusResponse.json();
 
               setMessages(currentMessages => currentMessages.map(msg => {
-                  if (msg.jobId === jobId) { // KEY CHANGE: Find by job_id
+                  if (msg.jobId === jobId) {
                       const updatedMsg: Message = { 
                           ...msg, 
                           thinking_steps: jobStatus.thoughts,
                           content: (jobStatus.status === 'complete') ? (jobStatus.final_answer || '') : msg.content,
                           role: (jobStatus.status === 'failed') ? 'error' : msg.role,
-                          jobId: msg.jobId // Keep jobId by default
+                          jobId: msg.jobId
                       };
-                      // If the job is done, remove the jobId to make it a static message
                       if (['complete', 'failed', 'cancelled'].includes(jobStatus.status)) {
                           delete updatedMsg.jobId; 
                           if (jobStatus.status === 'failed') {
@@ -219,7 +216,7 @@ function App() {
 
     setIsLoading(true);
     setCurrentChatId(chatId);
-    setMessages([]); // Clear previous messages
+    setMessages([]);
 
     try {
         const historyRes = await fetch(`${API_BASE_URL}/v1/chats/${chatId}`);
@@ -229,10 +226,10 @@ function App() {
         const historyMessages: Message[] = historyData.map((m: any, index: number) => ({
             id: `${chatId}-${index}`,
             role: m.role,
-            content: m.content || '', // Use the 'content' field from the backend
+            content: m.content || '',
             displayedContent: m.content || '',
             thinking_steps: m.thinking_steps || [],
-            sources: m.sources || [] // Defensively get sources, default to empty array
+            sources: m.sources || []
         }));
         
         const activeJobRes = await fetch(`${API_BASE_URL}/v1/chats/${chatId}/active_job`);
@@ -315,18 +312,15 @@ function App() {
     const messageText = userInput.trim();
     if (!messageText || isLoading) return;
 
-    // --- Optimistic UI Update ---
     const userMessage: Message = {
       id: `local-${uuidv4()}`,
       role: 'user',
       content: messageText,
       displayedContent: messageText,
     };
-    // Add user message to UI immediately and clear input
     setMessages(prevMessages => [...prevMessages, userMessage]);
     setUserInput('');
     setIsLoading(true);
-    // -----------------------------
 
     if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -346,13 +340,12 @@ function App() {
             
             const newChatInfo: Chat = await chatResponse.json();
             conversationId = newChatInfo.id;
-            setCurrentChatId(conversationId); // Set the new chat as active
-            await loadChats(); // Refresh the sidebar
+            setCurrentChatId(conversationId);
+            await loadChats();
         }
 
         if (!conversationId) throw new Error("Missing conversation ID to create a job.");
 
-        // Backend job creation
         const jobResponse = await fetch(`${API_BASE_URL}/v1/jobs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -367,7 +360,6 @@ function App() {
         const { job_id } = await jobResponse.json();
         setCurrentJobId(job_id);
 
-        // --- Add Model Placeholder and Start Polling ---
         const modelPlaceholder: Message = {
             id: `model-${job_id}`,
             role: 'model',
@@ -378,17 +370,13 @@ function App() {
         };
         setMessages(prevMessages => [...prevMessages, modelPlaceholder]);
         startPolling(job_id, isNewChat);
-        // ---------------------------------------------
 
     } catch (error) {
         console.error('Error during message sending process:', error);
-        // Revert optimistic update on failure
         setMessages(prev => prev.filter(m => m.id !== userMessage.id)); 
-        setUserInput(messageText); // Restore user input
+        setUserInput(messageText);
         setIsLoading(false);
-        // Optionally add a temporary error message to the UI
     }
-    // NOTE: The 'finally' block is removed as setIsLoading is now handled by the polling logic.
 };
 
   const handleCancelJob = async () => {
@@ -405,7 +393,6 @@ function App() {
       setIsLoading(false);
       setCurrentJobId(null);
 
-      // Reload the chat to reflect the cancelled state from history
       if (currentChatId) {
         selectChat(currentChatId);
       }
@@ -505,7 +492,6 @@ function App() {
                                 />
                               )}
                               <p className="content">{msg.displayedContent}</p>
-                              {/* Defensive rendering of sources */}
                               {msg.sources && msg.sources.length > 0 && (
                                 <div className="message-sources">
                                   <strong>Источники: </strong>
