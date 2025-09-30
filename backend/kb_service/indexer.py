@@ -14,11 +14,10 @@ logger = logging.getLogger(__name__)
 class KnowledgeBaseIndexer:
     def __init__(self, connector: KnowledgeBaseConnector) -> None:
         self.connector = connector
-        self.files: Dict[str, Dict] = {}  # Stores file metadata, keyed by file_id
-        self.index: Optional[faiss.Index] = None  # The FAISS index for all chunks
-        # INSTRUCTION 1: Add a new property to __init__
-        self.embeddings: Optional[np.ndarray] = None # Raw embeddings for all chunks
-        self.chunks: List[Dict] = []  # Stores chunk text and metadata
+        self.files: Dict[str, Dict] = {}
+        self.index: Optional[faiss.Index] = None
+        self.embeddings: Optional[np.ndarray] = None
+        self.chunks: List[Dict] = []
         self.embedding_model = 'models/embedding-001'
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1500, 
@@ -30,7 +29,6 @@ class KnowledgeBaseIndexer:
         logger.info("Starting production knowledge base index build.")
         all_files = self.connector.list_files_recursive('/')
         
-        # Reset state
         self.files = {file['id']: file for file in all_files}
         self.chunks = []
         self.index = None
@@ -68,7 +66,6 @@ class KnowledgeBaseIndexer:
             task_type="RETRIEVAL_DOCUMENT"
         )
         
-        # INSTRUCTION 2: Store embeddings in build_index
         embeddings_array = np.array(result['embedding']).astype('float32')
         self.embeddings = embeddings_array
         
@@ -77,13 +74,11 @@ class KnowledgeBaseIndexer:
         self.index.add(self.embeddings)
         logger.info(f"FAISS index built successfully with {len(self.chunks)} chunks from {len(self.files)} files.")
 
-    # INSTRUCTION 3: Completely rewrite the search method
     def search(self, query: str, top_k: int = 5, file_id: Optional[str] = None) -> List[Dict]:
         logger.info(f"Performing semantic search for '{query}'" + (f" within file {file_id}" if file_id else ""))
         if self.index is None or self.embeddings is None or not query:
             return []
 
-        # Generate embedding for the query
         query_embedding_result = genai.embed_content(
             model=self.embedding_model,
             content=query,
@@ -92,32 +87,25 @@ class KnowledgeBaseIndexer:
         query_embedding = np.array([query_embedding_result['embedding']]).astype('float32')
 
         if file_id:
-            # --- FOCUSED SEARCH LOGIC ---
-            # 1. Find indices of chunks belonging to the target file
             target_chunk_indices = [i for i, chunk in enumerate(self.chunks) if chunk.get('file_id') == file_id]
             
             if not target_chunk_indices:
                 logger.warning(f"No chunks found for file_id: {file_id}")
                 return []
 
-            # 2. Extract the embeddings for these specific chunks
             target_embeddings = self.embeddings[target_chunk_indices]
 
-            # 3. Build a temporary, in-memory FAISS index for just these chunks
             dimension = target_embeddings.shape[1]
             temp_index = faiss.IndexFlatL2(dimension)
             temp_index.add(target_embeddings)
 
-            # 4. Search in the temporary index
             distances, local_indices = temp_index.search(query_embedding, k=min(top_k, len(target_chunk_indices)))
 
-            # 5. Map local indices back to the original chunk indices
             original_indices = [target_chunk_indices[i] for i in local_indices[0]]
             
             results = [self.chunks[i] for i in original_indices]
 
         else:
-            # --- GLOBAL SEARCH LOGIC ---
             distances, original_indices = self.index.search(query_embedding, k=top_k)
             results = [self.chunks[i] for i in original_indices[0] if i < len(self.chunks)]
 
@@ -128,5 +116,4 @@ class KnowledgeBaseIndexer:
         return self.files.get(file_id)
 
     def get_all_files(self) -> List[Dict]:
-        """Returns a list of all file metadata known to the indexer."""
         return list(self.files.values()) if self.files else []
