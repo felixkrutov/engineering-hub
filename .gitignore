@@ -1,16 +1,14 @@
-# --- Секреты и переменные окружения (САМОЕ ВАЖНОЕ) ---
+
 .env
 .env.*
 frontend/.env
 
-# --- Python ---
 __pycache__/
 *.pyc
 .venv/
 venv/
 env/
 
-# --- Node.js ---
 node_modules/
 dist/
 build/
@@ -20,17 +18,13 @@ yarn-debug.log*
 yarn-error.log*
 *.tsbuildinfo
 
-# --- Docker ---
-# Папка с данными базы данных, создаваемая Docker
 postgres_data/
 
-# --- Системный мусор (macOS, Windows, Linux) ---
 .DS_Store
 Thumbs.db
 *.tmp
 *.swp
 
-# --- Настройки IDE/Редакторов ---
 .idea/
 .vscode/
 chat_histories/
